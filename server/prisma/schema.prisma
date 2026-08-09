@@ -1,0 +1,255 @@
+generator client {
+  provider            = "prisma-client"
+  output              = "../db/generated"
+  importFileExtension = ""
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum CloudProvider {
+  AWS
+  GCP
+  AZURE
+  DIGITALOCEAN
+  HETZNER
+  CUSTOM_VPS
+}
+
+enum ProviderConnectionStatus {
+  PENDING
+  CONNECTED
+  FAILED
+  DISABLED
+}
+
+enum CredentialType {
+  ACCESS_KEY
+  IAM_ROLE
+  SERVICE_ACCOUNT
+  OAUTH
+  CUSTOM
+}
+
+enum ChatRole {
+  USER
+  ASSISTANT
+}
+
+enum DeploymentType {
+  VERCEL
+}
+
+enum DeploymentProvider {
+  TISIOPS_MANAGED_VERCEL
+}
+
+enum DeploymentStatus {
+  PREPARING
+  RETRYING
+  BUILDING
+  LIVE
+  FAILED
+  CANCELLED
+  /// Built and deployed, but Vercel Deployment Protection blocks the URL.
+  ACCESS_BLOCKED
+  /// No real deployment ran — the MVP recorded the approval only.
+  PLACEHOLDER
+}
+
+enum LogLevel {
+  INFO
+  WARNING
+  ERROR
+  SUCCESS
+}
+
+enum EnvTarget {
+  PRODUCTION
+  PREVIEW
+  DEVELOPMENT
+}
+
+model User {
+  id        String   @id @default(cuid())
+  clerkId   String   @unique
+  email     String   @unique
+  name      String?
+  imageUrl  String?
+  role      Role     @default(USER)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  connections  CloudProviderConnection[]
+  chatSessions AiChatSession[]
+  deployments  Deployment[]
+
+  @@index([email])
+}
+
+/// One deployment run, owned by exactly one user. Reads go through
+/// services/deployments, which scopes every query by userId.
+model Deployment {
+  id       String             @id @default(cuid())
+  userId   String
+  user     User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type     DeploymentType     @default(VERCEL)
+  provider DeploymentProvider @default(TISIOPS_MANAGED_VERCEL)
+
+  appName         String
+  repositoryName  String
+  repositoryOwner String
+  repositoryUrl   String?
+  branch          String
+  framework       String?
+  /// Folder inside the repository, e.g. "frontend" in a monorepo.
+  /// Root Directory sent to Vercel, e.g. "frontend" in a monorepo.
+  servicePath     String?
+  buildCommand    String?
+  startCommand    String?
+  /// Empty/null means "let Vercel manage it", which is right for Next.js.
+  outputDirectory String?
+
+  status     DeploymentStatus @default(PREPARING)
+  previewUrl String?
+
+  vercelProjectId    String?
+  vercelDeploymentId String?
+  /// Why a deployment failed, or why it stayed a placeholder.
+  statusDetail       String?
+  /// Machine-readable failure reason, e.g. GITHUB_BRANCH_NOT_FOUND, so the UI
+  /// can offer the right next action rather than parsing a sentence.
+  failureCode        String?
+
+  retryCount    Int       @default(0)
+  lastRetriedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  logs                 DeploymentLog[]
+  environmentVariables DeploymentEnvVar[]
+  attempts             DeploymentAttempt[]
+
+  @@index([userId, createdAt])
+}
+
+/// One deploy or retry run. The Deployment is the logical app; each attempt
+/// is a separate execution with its own outcome.
+model DeploymentAttempt {
+  id            String           @id @default(cuid())
+  deploymentId  String
+  deployment    Deployment       @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  attemptNumber Int
+  status        DeploymentStatus @default(PREPARING)
+  errorMessage  String?
+  previewUrl    String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  logs DeploymentLog[]
+
+  @@unique([deploymentId, attemptNumber])
+  @@index([deploymentId, attemptNumber])
+}
+
+model DeploymentLog {
+  id           String     @id @default(cuid())
+  deploymentId String
+  deployment   Deployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  /// Which run produced this line, so a retry timeline can be grouped.
+  attemptId    String?
+  attempt      DeploymentAttempt? @relation(fields: [attemptId], references: [id], onDelete: SetNull)
+  level        LogLevel   @default(INFO)
+  message      String
+  createdAt    DateTime   @default(now())
+
+  @@index([deploymentId, createdAt])
+}
+
+/// Values are encrypted at rest (server/utils/crypto.ts) and never returned
+/// to the client — only the key and target are ever readable.
+model DeploymentEnvVar {
+  id             String     @id @default(cuid())
+  deploymentId   String
+  deployment     Deployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  key            String
+  encryptedValue String
+  target         EnvTarget  @default(PREVIEW)
+  createdAt      DateTime   @default(now())
+
+  @@unique([deploymentId, key, target])
+}
+
+/// One AI Console conversation. Owned by exactly one user: every read and
+/// write goes through services/chat-session-service.ts, which filters by
+/// userId on the query itself rather than checking ownership afterwards.
+model AiChatSession {
+  id        String          @id @default(cuid())
+  userId    String
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  messages  AiChatMessage[]
+
+  /// Repository the conversation is currently about, so "this repo" and
+  /// "deploy the frontend" resolve without the user naming it again.
+  activeRepoOwner   String?
+  activeRepoName    String?
+  activeBranch      String?
+  activeServicePath String?
+
+  @@index([userId, updatedAt])
+}
+
+model AiChatMessage {
+  id        String        @id @default(cuid())
+  sessionId String
+  session   AiChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role      ChatRole
+  content   String
+  createdAt DateTime      @default(now())
+
+  @@index([sessionId, createdAt])
+}
+
+/// Cloud credentials for one user. Secrets are stored encrypted only
+/// (server/utils/crypto.ts); nothing here is safe to return to the client
+/// as-is — go through toSafeConnection() in services/provider-connections.
+model CloudProviderConnection {
+  id             String         @id @default(cuid())
+  userId         String
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider       CloudProvider
+  credentialType CredentialType @default(ACCESS_KEY)
+  name           String
+  defaultRegion  String
+
+  // Identity returned by sts:GetCallerIdentity — display-safe, no secrets.
+  awsAccountId String?
+  awsArn       String?
+  awsUserId    String?
+
+  // Last 4 of the access key id, for the masked display in the UI.
+  accessKeyLast4 String?
+
+  encryptedAccessKeyId     String?
+  encryptedSecretAccessKey String?
+
+  status         ProviderConnectionStatus @default(PENDING)
+  lastVerifiedAt DateTime?
+  failureReason  String?
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @updatedAt
+
+  // Re-saving the same named connection updates it instead of piling up rows.
+  @@unique([userId, provider, name])
+  @@index([userId])
+}

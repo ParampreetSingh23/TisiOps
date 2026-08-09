@@ -1,0 +1,60 @@
+{
+  "name": "@tisiops/server",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./auth": "./auth/index.ts",
+    "./constants": "./constants/index.ts",
+    "./db": "./db/prisma.ts",
+    "./services/user": "./services/user-service.ts",
+    "./utils/response": "./utils/response.ts",
+    "./validations/user": "./validations/user.ts",
+    "./auth/express": "./auth/express.ts",
+    "./services/chat": "./services/chat-service.ts",
+    "./validations/chat": "./validations/chat.ts",
+    "./services/aws": "./services/aws/sts.ts",
+    "./services/provider-connections": "./services/provider-connections/index.ts",
+    "./validations/provider-connection": "./validations/provider-connection.ts",
+    "./services/vercel": "./services/vercel/agent.ts",
+    "./services/github": "./services/github/status.ts",
+    "./services/deployments": "./services/deployments/index.ts",
+    "./services/github/repos": "./services/github/repos.ts",
+    "./validations/deployment": "./validations/deployment.ts",
+    "./services/github/intent": "./services/github/intent.ts",
+    "./services/github/agent": "./services/github/agent.ts",
+    "./services/github/analyze": "./services/github/analyze.ts",
+    "./services/github/source": "./services/github/source.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch --env-file=.env index.ts",
+    "start": "tsx --env-file=.env index.ts",
+    "generate": "prisma generate",
+    "migrate": "prisma migrate dev",
+    "migrate:status": "prisma migrate status",
+    "studio": "prisma studio",
+    "check:crypto": "tsx utils/crypto.check.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sts": "^3.1106.0",
+    "@clerk/express": "^2.1.52",
+    "@clerk/nextjs": "^7.7.0",
+    "@prisma/adapter-pg": "^7.9.1",
+    "@prisma/client": "^7.9.1",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "next": "16.2.6",
+    "tar-stream": "^3.2.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/tar-stream": "^3.1.4",
+    "dotenv": "^17.2.4",
+    "prisma": "^7.9.1",
+    "tsx": "^4.23.11",
+    "typescript": "^5"
+  }
+}

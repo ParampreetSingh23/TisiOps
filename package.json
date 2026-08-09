@@ -1,0 +1,19 @@
+{
+  "name": "tisiops",
+  "version": "0.0.1",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "server"
+  ],
+  "scripts": {
+    "dev": "npm run dev:api & npm run dev:web",
+    "dev:web": "npm run dev --workspace frontend",
+    "dev:api": "npm run dev --workspace @tisiops/server",
+    "build": "npm run build --workspace frontend",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "db:generate": "npm run generate --workspace @tisiops/server",
+    "db:migrate": "npm run migrate --workspace @tisiops/server",
+    "db:studio": "npm run studio --workspace @tisiops/server"
+  }
+}

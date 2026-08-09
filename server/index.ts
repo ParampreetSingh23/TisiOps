@@ -54,7 +54,11 @@ import {
 } from "./validations/deployment"
 
 const PORT = Number(process.env.PORT ?? 5001)
-const FRONTEND_URL = process.env.FRONTEND_URL ?? "http://localhost:3000"
+// Trailing slash stripped: browsers compare Access-Control-Allow-Origin against
+// the slashless Origin header, so "https://app.vercel.app/" fails preflight.
+const FRONTEND_URL = (
+  process.env.FRONTEND_URL ?? "http://localhost:3000"
+).replace(/\/+$/, "")
 
 const app = express()
 

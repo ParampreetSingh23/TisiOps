@@ -1,4 +1,8 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5001"
+// Trailing slash stripped so a dashboard-set value like "https://host/" does
+// not produce a double-slashed request path.
+const API_URL = (
+  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5001"
+).replace(/\/+$/, "")
 
 /**
  * Calls the TisiOps API. `credentials: "include"` sends the Clerk session

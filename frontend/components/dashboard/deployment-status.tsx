@@ -2,6 +2,7 @@
 
 import { AlertTriangle, ExternalLink, Loader2, RotateCw } from "lucide-react"
 
+import { DeploymentActions } from "@/components/dashboard/deployment-actions"
 import { ErrorDialog } from "@/components/dashboard/error-dialog"
 import { GithubConnect } from "@/components/deployment/github-connect"
 import { ProviderIcon } from "@/components/deployment/provider-icon"
@@ -142,79 +143,144 @@ export function DeploymentStatus({ id }: { id: string }) {
     )
   }
 
-  const details = [
-    { label: "App Name", value: deployment.appName },
+  /**
+   * The build settings, as a spec list.
+   *
+   * Facts about a deployment are a definition list, not eleven cards. A box
+   * per key/value pair gives "Framework: —" the same visual weight as the
+   * repository, and turns a page you scan in two seconds into one you have to
+   * read. Hairline rows put them back in a column the eye can run down.
+   */
+  const spec: { label: string; value: string; mono?: boolean }[] = [
     {
       label: "Repository",
       value: `${deployment.repositoryOwner}/${deployment.repositoryName}`,
+      mono: true,
     },
-    { label: "Branch", value: deployment.branch },
+    { label: "Branch", value: deployment.branch, mono: true },
     {
-      label: "Root Directory",
+      label: "Root directory",
       value: deployment.servicePath || "repository root",
+      mono: true,
     },
+    { label: "Framework", value: deployment.framework ?? "Not detected" },
     {
-      label: "Build Command",
+      label: "Build command",
       value: deployment.buildCommand ?? "Framework default",
+      mono: true,
     },
     {
-      label: "Output Directory",
+      label: "Output directory",
       value: outputDirectoryLabel(deployment.framework),
     },
-    { label: "Deployment Type", value: deployment.type },
     { label: "Provider", value: "TisiOps Managed Vercel" },
-    { label: "Framework", value: deployment.framework ?? "—" },
     { label: "Created", value: formatDateTime(deployment.createdAt) },
-    { label: "Last Updated", value: formatDateTime(deployment.updatedAt) },
+    { label: "Last updated", value: formatDateTime(deployment.updatedAt) },
   ]
 
-  return (
-    <div>
-      <div className="flex flex-wrap items-center gap-3">
-        <span className="flex size-9 shrink-0 items-center justify-center rounded-[6px] border border-line bg-canvas">
-          <ProviderIcon id={deployment.type.toLowerCase()} />
-        </span>
-        <h1 className="font-heading text-2xl font-medium tracking-[-0.03em] text-ink">
-          {deployment.type.charAt(0) + deployment.type.slice(1).toLowerCase()}{" "}
-          Deployment
-        </h1>
-        <StatusBadge status={deployment.status} />
-      </div>
-      <p className="mt-2 flex flex-wrap items-center gap-3 text-base text-ink-muted">
-        <span className="font-mono text-sm">{deployment.id}</span>
-        {["BUILDING", "RETRYING", "PREPARING"].includes(deployment.status) ? (
-          <span className="inline-flex items-center gap-1.5 text-sm">
-            <Loader2
-              className="size-3.5 motion-safe:animate-spin"
-              aria-hidden
-            />
-            Watching Vercel for the build result
-          </span>
-        ) : null}
-      </p>
+  const building = ["BUILDING", "RETRYING", "PREPARING"].includes(
+    deployment.status
+  )
 
-      {deployment.status === "ACCESS_BLOCKED" ? (
-        <div className="mt-5 rounded-[6px] border border-line bg-brand-soft px-4 py-3 text-sm text-ink-default">
-          <p className="font-medium text-ink-strong">
-            The build succeeded, but the preview URL is not public.
-          </p>
-          <p className="mt-1.5">
-            Deployment was created, but the preview URL is protected by Vercel
-            settings. Disable Vercel Deployment Protection for TisiOps-managed
-            preview deployments.
-          </p>
-          <p className="mt-1.5 text-ink-muted">
-            Fix once, in the TisiOps Vercel account: Settings → Deployment
-            Protection → turn off Vercel Authentication for preview deployments.
-            Requesting access per visitor will not help.
-          </p>
+  return (
+    <div className="flex flex-col gap-5">
+      {/* One header: what it is, what state it is in, and where it lives. */}
+      <header>
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-[6px] border border-line bg-canvas">
+            <ProviderIcon id={deployment.type.toLowerCase()} />
+          </span>
+          <h1 className="font-heading text-2xl font-medium tracking-[-0.03em] text-ink">
+            {deployment.appName}
+          </h1>
+          <StatusBadge status={deployment.status} />
+          {building ? (
+            <span className="inline-flex items-center gap-1.5 text-sm text-ink-muted">
+              <Loader2
+                className="size-3.5 motion-safe:animate-spin"
+                aria-hidden
+              />
+              Watching Vercel for the build result
+            </span>
+          ) : null}
         </div>
+
+        <p className="mt-2 font-mono text-xs text-ink-muted">{deployment.id}</p>
+      </header>
+
+      {/* The address is what someone opens this page for, so it leads. */}
+      {deployment.previewUrl ? (
+        <section className={card}>
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold tracking-[0.06em] text-ink-muted uppercase">
+                {deployment.status === "PLACEHOLDER"
+                  ? "Placeholder URL"
+                  : "Public URL"}
+              </p>
+              <p className="mt-1.5 font-mono text-sm break-all text-ink-strong">
+                {deployment.previewUrl}
+              </p>
+            </div>
+
+            {deployment.status === "LIVE" ? (
+              <a
+                href={deployment.previewUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={primaryButton}
+              >
+                Open
+                <ExternalLink className="ml-1.5 size-3.5" aria-hidden />
+              </a>
+            ) : null}
+          </div>
+
+          {deployment.status === "PLACEHOLDER" ? (
+            <p className="mt-3 text-sm text-ink-muted">
+              Placeholder address — it will not load.
+            </p>
+          ) : null}
+
+          {/* Folded away: it is a debugging detail, and Deployment Protection
+              usually blocks it, so it must never look like the address to use. */}
+          {deployment.vercelDeploymentUrl ? (
+            <details className="mt-4 border-t border-line pt-4">
+              <summary className="cursor-pointer text-xs font-semibold tracking-[0.06em] text-ink-muted uppercase">
+                Build URL
+              </summary>
+              <p className="mt-2 font-mono text-sm break-all text-ink-muted">
+                {deployment.vercelDeploymentUrl}
+              </p>
+              <p className="mt-1.5 text-sm text-ink-muted">
+                Per-build address, kept for debugging. Vercel Deployment
+                Protection usually blocks it.
+              </p>
+            </details>
+          ) : null}
+        </section>
       ) : null}
 
-      {/* A GitHub permission problem is not fixed by retrying — granting
-          access is the actual next step. */}
+      {/* Said once. The same warning printed twice reads as a bug. */}
+      {deployment.status === "ACCESS_BLOCKED" ? (
+        <section className="rounded-[6px] border border-line bg-brand-soft px-4 py-3.5 text-sm text-ink-default">
+          <p className="font-medium text-ink-strong">
+            The build succeeded, but no URL is public yet.
+          </p>
+          <p className="mt-1.5">
+            Neither the public project URL nor the build URL opens without a
+            Vercel login.
+          </p>
+          <p className="mt-1.5 text-ink-muted">
+            Fix once in the TisiOps Vercel account: Settings → Deployment
+            Protection → turn off Vercel Authentication. Requesting access per
+            visitor will not help.
+          </p>
+        </section>
+      ) : null}
+
       {deployment.needsGithubReconnect ? (
-        <section className={`${card} mt-5`}>
+        <section className={card}>
           <h2 className="text-base font-semibold tracking-[-0.01em] text-ink-strong">
             GitHub access needs attention
           </h2>
@@ -231,23 +297,22 @@ export function DeploymentStatus({ id }: { id: string }) {
       ) : null}
 
       {deployment.status === "PLACEHOLDER" ? (
-        <p className="mt-5 rounded-[6px] border border-line bg-canvas px-4 py-3 text-sm text-ink-default">
+        <p className="rounded-[6px] border border-line bg-canvas px-4 py-3 text-sm text-ink-default">
           MVP placeholder: real Vercel deployment execution is not enabled yet.
         </p>
       ) : null}
 
-      {/* The failure opens as a dialog rather than sitting inline: it is the
-          one thing worth reading on a failed deployment, and the raw provider
-          text is too long to wear as a banner. */}
       {hasFailure ? (
-        <button
-          type="button"
-          onClick={() => setShowError(true)}
-          className={`mt-5 ${secondaryButton}`}
-        >
-          <AlertTriangle className="mr-2 size-4 text-[#a8341f]" aria-hidden />
-          View error details
-        </button>
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowError(true)}
+            className={secondaryButton}
+          >
+            <AlertTriangle className="mr-2 size-4 text-[#a8341f]" aria-hidden />
+            View error details
+          </button>
+        </div>
       ) : null}
 
       <ErrorDialog
@@ -275,52 +340,30 @@ export function DeploymentStatus({ id }: { id: string }) {
         isRetrying={isRetrying}
       />
 
-      <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {details.map((detail) => (
-          <div key={detail.label} className={card}>
-            <p className="text-xs font-semibold tracking-[0.06em] text-ink-muted uppercase">
-              {detail.label}
-            </p>
-            <p className="mt-2 text-sm font-medium break-all text-ink-strong">
-              {detail.value}
-            </p>
-          </div>
-        ))}
-      </div>
-
-      {deployment.previewUrl ? (
-        <div className={`${card} mt-4`}>
-          <p className="text-xs font-semibold tracking-[0.06em] text-ink-muted uppercase">
-            Preview URL
-          </p>
-          <p className="mt-2 font-mono text-sm break-all text-ink-strong">
-            {deployment.previewUrl}
-          </p>
-          {deployment.status === "ACCESS_BLOCKED" ? (
-            <div className="mt-5 rounded-[6px] border border-line bg-brand-soft px-4 py-3 text-sm text-ink-default">
-              <p className="font-medium text-ink-strong">
-                The build succeeded, but the preview URL is not public.
-              </p>
-              <p className="mt-1.5">
-                Deployment was created, but the preview URL is protected by
-                Vercel settings. Disable Vercel Deployment Protection for
-                TisiOps-managed preview deployments.
-              </p>
-              <p className="mt-1.5 text-ink-muted">
-                Fix once, in the TisiOps Vercel account: Settings → Deployment
-                Protection → turn off Vercel Authentication for preview
-                deployments. Requesting access per visitor will not help.
-              </p>
+      {/* Two columns of rows rather than a grid of boxes: same information,
+          one border instead of eleven. */}
+      <section className={card}>
+        <p className="text-xs font-semibold tracking-[0.06em] text-ink-muted uppercase">
+          Configuration
+        </p>
+        <dl className="mt-1 grid sm:grid-cols-2 sm:gap-x-10">
+          {spec.map((item) => (
+            <div
+              key={item.label}
+              className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1 border-b border-line/60 py-2.5 last:border-b-0 sm:last:border-b sm:[&:nth-last-child(-n+1)]:border-b-0"
+            >
+              <dt className="text-sm text-ink-muted">{item.label}</dt>
+              <dd
+                className={`min-w-0 text-right text-sm break-all text-ink-strong ${
+                  item.mono ? "font-mono" : ""
+                }`}
+              >
+                {item.value}
+              </dd>
             </div>
-          ) : null}
-
-          {deployment.status === "PLACEHOLDER" ? (
-            <p className="mt-2 text-sm text-ink-muted">
-              Placeholder address — it will not load.
-            </p>
-          ) : null}
-        </div>
-      ) : null}
+          ))}
+        </dl>
+      </section>
 
       {deployment.canRetry ? (
         <section className={`${card} mt-4`}>
@@ -385,18 +428,11 @@ export function DeploymentStatus({ id }: { id: string }) {
         </section>
       ) : null}
 
-      <div className="mt-6 flex flex-wrap gap-3">
-        {deployment.previewUrl && deployment.status === "LIVE" ? (
-          <a
-            href={deployment.previewUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className={primaryButton}
-          >
-            Open Preview
-            <ExternalLink className="ml-1.5 size-3.5" aria-hidden />
-          </a>
-        ) : null}
+      <DeploymentActions id={deployment.id} />
+
+      {/* Open lives with the URL above; repeating it here would be the same
+          action twice on one screen. */}
+      <div className="flex flex-wrap gap-3">
         <Link
           href={`/dashboard/logs?deployment=${deployment.id}`}
           className={secondaryButton}

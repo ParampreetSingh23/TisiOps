@@ -642,10 +642,46 @@ export function VercelFlow() {
       {step === "plan" ? (
         <div>
           <h4 className="text-sm font-semibold text-ink-strong">
-            Deployment plan
+            Website Deployment Plan
           </h4>
-          <p className="mt-1.5 text-sm text-ink-muted">TisiOps will:</p>
-          <ol className="mt-3 flex flex-col gap-2">
+
+          <dl className="mt-3 grid gap-x-6 gap-y-2 rounded-[6px] border border-line bg-canvas p-4 sm:grid-cols-2">
+            <div className="flex gap-3 text-sm">
+              <dt className="w-36 shrink-0 text-ink-muted">Repository</dt>
+              <dd className="font-mono font-medium text-ink-strong">{repository?.fullName}</dd>
+            </div>
+            <div className="flex gap-3 text-sm">
+              <dt className="w-36 shrink-0 text-ink-muted">Branch</dt>
+              <dd className="font-mono font-medium text-ink-strong">{branch}</dd>
+            </div>
+            <div className="flex gap-3 text-sm">
+              <dt className="w-36 shrink-0 text-ink-muted">Root Directory</dt>
+              <dd className="font-medium text-ink-strong">{servicePath || "repository root"}</dd>
+            </div>
+            <div className="flex gap-3 text-sm">
+              <dt className="w-36 shrink-0 text-ink-muted">Framework/Type</dt>
+              <dd className="font-medium text-ink-strong">{framework ?? "Website Project"}</dd>
+            </div>
+            <div className="flex gap-3 text-sm">
+              <dt className="w-36 shrink-0 text-ink-muted">Target</dt>
+              <dd className="font-medium text-ink-strong">TisiOps Managed Vercel Preview</dd>
+            </div>
+            <div className="flex gap-3 text-sm">
+              <dt className="w-36 shrink-0 text-ink-muted">Build Command</dt>
+              <dd className="font-medium text-ink-strong">{service?.buildCommand ?? "Framework default"}</dd>
+            </div>
+            <div className="flex gap-3 text-sm">
+              <dt className="w-36 shrink-0 text-ink-muted">Output Directory</dt>
+              <dd className="font-medium text-ink-strong">{outputDirectoryLabel}</dd>
+            </div>
+            <div className="flex gap-3 text-sm">
+              <dt className="w-36 shrink-0 text-ink-muted">Expected URL</dt>
+              <dd className="font-mono font-medium text-brand">https://tisiops-preview.vercel.app</dd>
+            </div>
+          </dl>
+
+          <p className="mt-4 text-sm text-ink-muted">TisiOps will:</p>
+          <ol className="mt-2 flex flex-col gap-2">
             {start.plan.map((planStep, index) => (
               <li key={planStep} className="flex gap-3 text-sm">
                 <span className="flex size-5 shrink-0 items-center justify-center rounded-[4px] bg-canvas text-xs font-semibold text-ink-muted">
@@ -703,7 +739,7 @@ export function VercelFlow() {
               ) : (
                 <>
                   <Check className="mr-2 size-4" aria-hidden />
-                  Approve and Deploy to Vercel
+                  Approve and Deploy
                 </>
               )}
             </button>

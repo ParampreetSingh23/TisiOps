@@ -88,7 +88,9 @@ function ServiceCard({
         >
           {status.label}
         </span>
-        <span className={MUTED_BADGE}>{service.projectType}</span>
+        <span className={MUTED_BADGE}>
+          {service.projectType === "static" ? "website" : service.projectType}
+        </span>
         {service.framework ? (
           <span className={MUTED_BADGE}>{service.framework}</span>
         ) : null}
@@ -179,7 +181,10 @@ function AnalysisRows({ analysis }: { analysis: RepoAnalysis }) {
         label="Start Command"
         value={analysis.startCommand ?? "None found"}
       />
-      <Row label="Project Type" value={analysis.projectType} />
+      <Row
+        label="Project Type"
+        value={analysis.projectType === "static" ? "Website" : analysis.projectType}
+      />
       <Row
         label="Environment Variables"
         value={
@@ -429,13 +434,13 @@ export function GithubCards({
             )}
           </span>
           <h4 className="text-sm font-semibold text-ink-strong">
-            {response.ready ? "Vercel ready" : "Not Vercel ready"}
+            {response.ready ? "Website Deployment Plan Ready" : "Target Not Supported"}
           </h4>
         </div>
 
         {response.service ? (
           <p className="mt-2 font-mono text-sm text-ink-muted">
-            /{response.service.path || "root"} · {response.service.projectType}
+            /{response.service.path || "root"} · {response.service.projectType === "static" ? "website" : response.service.projectType}
           </p>
         ) : null}
 

@@ -37,7 +37,9 @@
   --font-display: "Google Sans", var(--font-sans), sans-serif;
   --font-sans: var(--font-sans);
 
-  /* DESIGN.md brand tokens — fixed light values, intentionally not theme-flipped */
+  /* DESIGN.md brand tokens. Every surface, border, and text colour in the
+     product resolves through these, so a theme is defined once here rather
+     than as dark: variants scattered across components. */
   --color-canvas: var(--tisi-canvas);
   --color-surface: var(--tisi-surface);
   --color-brand: var(--tisi-brand);
@@ -93,9 +95,9 @@
 }
 
 :root {
-  /* TisiOps is a light-mode product. Without this, macOS renders the
-     browser's own controls (checkboxes, scrollbars, pickers) in dark grey
-     when the OS is set to dark. */
+  /* Light is the default. Without this, macOS renders the browser's own
+     controls (checkboxes, scrollbars, pickers) in dark grey when the OS is
+     set to dark but TisiOps is not. */
   color-scheme: light;
 
   /* TisiOps brand palette (DESIGN.md) */
@@ -146,7 +148,33 @@
   --sidebar-ring: oklch(0.708 0 0);
 }
 
+/**
+ * Dark theme.
+ *
+ * The same tokens, re-pointed. Because components only ever reference
+ * canvas/surface/ink/line/brand, redefining them here themes the whole product
+ * — landing page, dashboard, cards, logs — without touching a component.
+ *
+ * Warm near-black rather than pure black or blue-slate: the light theme is a
+ * warm off-white (#F9F7F6) and the orange accent sits badly on a cold ground.
+ * The accent brightens slightly so it keeps its punch on a dark surface.
+ */
 .dark {
+  color-scheme: dark;
+
+  --tisi-canvas: #131211;
+  --tisi-surface: #1c1a19;
+  --tisi-brand: #ff5c22;
+  --tisi-brand-hover: #ff7040;
+  --tisi-brand-active: #e64a12;
+  --tisi-brand-soft: #2a1b14;
+  --tisi-text-primary: #f5f3f2;
+  --tisi-text-strong: #ffffff;
+  --tisi-text-default: #e2dedc;
+  --tisi-text-secondary: #a09a97;
+  --tisi-border: #2e2b29;
+  --tisi-border-warm: #3a3634;
+
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);
@@ -178,6 +206,38 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+}
+
+.dark {
+  /* A drop shadow is invisible on a dark ground, so elevation is carried by a
+     slightly lighter edge instead. */
+  --shadow-card: 0 1px 3px rgb(0 0 0 / 0.4);
+  --shadow-float: 0 8px 30px rgb(0 0 0 / 0.5), 0 2px 8px rgb(0 0 0 / 0.3);
+}
+
+/**
+ * Theme cross-fade.
+ *
+ * Applied only while the class is on <html>, for the length of the switch.
+ * A permanent global transition would also slow every hover, and Tailwind's
+ * own `transition-colors` utilities already own those — this stays out of
+ * their way by existing for ~220ms and then removing itself.
+ *
+ * Colour properties only. Transitioning layout or shadow here makes the whole
+ * page feel like it is settling rather than changing tone.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  .theme-switching,
+  .theme-switching *,
+  .theme-switching *::before,
+  .theme-switching *::after {
+    transition:
+      background-color 220ms ease-out,
+      border-color 220ms ease-out,
+      color 220ms ease-out,
+      fill 220ms ease-out,
+      stroke 220ms ease-out !important;
+  }
 }
 
 @layer base {

@@ -306,7 +306,7 @@ function detectFramework(facts: DirectoryFacts): string | null {
   if (file(/^(requirements\.txt|pyproject\.toml)$/)) return "Python"
   if (file(/^pom\.xml$/)) return "Java"
   if (file(/^go\.mod$/)) return "Go"
-  if (file(/^index\.html$/)) return "Static site"
+  if (file(/^index\.html$/) || file(/\.html$/)) return "HTML/CSS/JS Website"
   return null
 }
 
@@ -327,7 +327,7 @@ function detectProjectType(
     facts.paths.includes("docker-compose.yml")
 
   if (framework && FRONTEND_FRAMEWORKS.includes(framework)) return "frontend"
-  if (framework === "Static site") return "static"
+  if (framework === "HTML/CSS/JS Website" || framework === "Static site") return "static"
   if (framework && LONG_RUNNING_FRAMEWORKS.includes(framework)) return "backend"
   if (hasDocker) return "docker"
 
@@ -497,12 +497,13 @@ function summarise(
 
   if (!isMonorepo) {
     const only = services[0]!
-    return `${repo}: ${only.framework ?? "unknown framework"} (${only.projectType}).`
+    const displayType = only.projectType === "static" ? "website" : only.projectType
+    return `${repo}: ${only.framework ?? "unknown framework"} (${displayType}).`
   }
 
   const parts = services.map(
     (service) =>
-      `/${service.path || "root"} ${service.framework ?? service.projectType}`
+      `/${service.path || "root"} ${service.framework ?? (service.projectType === "static" ? "website" : service.projectType)}`
   )
   return `${repo}: monorepo with ${services.length} services — ${parts.join(", ")}.`
 }

@@ -1,3 +1,4 @@
+import { prisma } from "../../db/prisma"
 import { encryptSecret } from "../../utils/crypto"
 import {
   appendLog,
@@ -30,7 +31,9 @@ import {
   isVercelConfigured,
   LINKING_NOT_SUPPORTED,
   outputDirectoryFor,
+  projectName,
   PROTECTED_PREVIEW_MESSAGE,
+  publicProjectUrl,
   waitForBuild,
 } from "./client"
 import { fetchRepositorySource, type SourceFailure } from "../github/source"
@@ -57,14 +60,14 @@ export const DEPLOYMENT_PLAN = [
   "Trigger the Vercel deployment",
   "Wait for the build result",
   "Save deployment status",
-  "Return the Vercel preview URL",
+  "Return the public Vercel project URL",
   "Make the deployment visible in Deployments and Logs",
 ]
 
 export type VercelFlowStart = {
   type: "vercel_deployment_flow"
   feature: typeof FEATURE_NAME
-  title: typeof FEATURE_NAME
+  title: string
   description: string
   badge: "Managed Preview"
   note: string
@@ -102,13 +105,13 @@ export async function startVercelFlow(
   return {
     type: "vercel_deployment_flow",
     feature: FEATURE_NAME,
-    title: FEATURE_NAME,
+    title: "Website Deployment Plan",
     description:
-      "Deploy a frontend application from GitHub to a Vercel preview URL managed by TisiOps.",
+      "Deploy a website project from GitHub to a TisiOps Managed Vercel Preview.",
     badge: "Managed Preview",
     note: "No personal Vercel account is required for this MVP flow.",
     message:
-      "Deploying a GitHub repository to a TisiOps-managed Vercel preview. Pick the repository and branch, add any environment variables, then approve the plan — nothing deploys before that.",
+      "I’ll deploy this website for you. Pick the repository and branch, add any environment variables, then approve the plan — nothing deploys before that.",
     nextStep,
     github,
     repositories,
@@ -294,6 +297,7 @@ async function runAttempt(input: {
   )
 
   const result = await deployFromSource({
+    repositoryOwner: input.repositoryOwner,
     repositoryName: input.repositoryName,
     framework: input.framework,
     files: source.files,
@@ -333,15 +337,18 @@ async function runAttempt(input: {
     deploymentId,
     [
       { message: "Vercel deployment created" },
-      { message: "Preview URL reserved" },
+      { message: `Unique deployment URL received: ${result.reservedUrl}` },
       { message: "Waiting for Vercel build result" },
     ],
     attemptId
   )
 
+  // The public URL is known from the project name alone, so it is recorded
+  // before the build finishes — the aliases the build returns only confirm it.
   await updateDeploymentStatus(deploymentId, {
     status: "BUILDING",
-    previewUrl: result.reservedUrl,
+    previewUrl: publicProjectUrl([], result.projectName),
+    vercelDeploymentUrl: result.reservedUrl,
     vercelProjectId: result.projectId,
     vercelDeploymentId: result.deploymentId,
     statusDetail: "Vercel accepted the deployment. Waiting for the build.",
@@ -405,62 +412,99 @@ async function runAttempt(input: {
   return finishReadyDeployment({
     deploymentId,
     attemptId,
-    url: outcome.url || result.reservedUrl,
+    deploymentUrl: outcome.url || result.reservedUrl,
+    aliases: outcome.aliases,
+    projectName: result.projectName,
     projectId: result.projectId,
     vercelDeploymentId: result.deploymentId,
   })
 }
 
 /**
- * A build Vercel calls ready still has to be reachable: Deployment Protection
- * turns a successful build into a preview nobody outside the team can open.
+ * A build Vercel calls ready still has to be reachable, and *which* URL is
+ * checked decides the answer. The per-build URL is the one Deployment
+ * Protection blocks; the project alias stays public, so that is both what the
+ * user is shown and what accessibility is judged on. The build URL is only
+ * consulted as a fallback, for the window before Vercel attaches the alias.
  */
 async function finishReadyDeployment(input: {
   deploymentId: string
   attemptId: string | null
-  url: string
+  /** The unique per-build URL, kept for logs and debugging. */
+  deploymentUrl: string
+  aliases: string[]
+  projectName: string
   projectId: string | null
   vercelDeploymentId: string | null
 }): Promise<SafeDeployment> {
-  const { deploymentId, attemptId, url } = input
+  const { deploymentId, attemptId, deploymentUrl } = input
+
+  const publicUrl = publicProjectUrl(
+    input.aliases,
+    input.projectName,
+    deploymentUrl
+  )
 
   await appendLogs(
     deploymentId,
     [
       { message: "Vercel deployment ready", level: "SUCCESS" },
-      { message: "Preview accessibility check started" },
+      { message: `Unique deployment URL received: ${deploymentUrl}` },
+      { message: `Public project alias resolved: ${publicUrl}` },
+      { message: "Checking public project URL" },
     ],
     attemptId
   )
 
-  const isPublic = await isPreviewPublic(url)
+  let url = publicUrl
+  let isPublic = await isPreviewPublic(publicUrl)
 
-  await appendLog(
-    deploymentId,
-    isPublic
-      ? "Preview URL is public"
-      : "Preview URL is protected by Vercel Deployment Protection",
-    isPublic ? "SUCCESS" : "WARNING",
-    attemptId
-  )
+  if (isPublic) {
+    await appendLog(
+      deploymentId,
+      "Public URL is accessible",
+      "SUCCESS",
+      attemptId
+    )
+  } else {
+    // The alias can lag a fresh project by a few seconds. The build URL
+    // working is still a live deployment, so say so rather than calling a
+    // working site blocked.
+    await appendLog(
+      deploymentId,
+      "Public project URL did not open — checking the unique deployment URL",
+      "WARNING",
+      attemptId
+    )
+
+    isPublic = await isPreviewPublic(deploymentUrl)
+    if (isPublic) url = deploymentUrl
+  }
 
   if (!isPublic) {
     if (attemptId) {
       await updateAttempt(attemptId, {
         status: "ACCESS_BLOCKED",
-        previewUrl: url,
+        previewUrl: publicUrl,
         errorMessage: PROTECTED_PREVIEW_MESSAGE,
       })
     }
+    await appendLog(
+      deploymentId,
+      "Both URLs are protected by Vercel Deployment Protection",
+      "WARNING",
+      attemptId
+    )
     const blocked = await updateDeploymentStatus(deploymentId, {
       status: "ACCESS_BLOCKED",
-      previewUrl: url,
+      previewUrl: publicUrl,
+      vercelDeploymentUrl: deploymentUrl,
       statusDetail: PROTECTED_PREVIEW_MESSAGE,
     })
     return toSafeDeployment(blocked)
   }
 
-  await appendLog(deploymentId, "Preview URL is live", "SUCCESS", attemptId)
+  await appendLog(deploymentId, "Deployment live", "SUCCESS", attemptId)
   if (attemptId) {
     await updateAttempt(attemptId, { status: "LIVE", previewUrl: url })
   }
@@ -468,6 +512,7 @@ async function finishReadyDeployment(input: {
   const live = await updateDeploymentStatus(deploymentId, {
     status: "LIVE",
     previewUrl: url,
+    vercelDeploymentUrl: deploymentUrl,
     vercelProjectId: input.projectId,
     vercelDeploymentId: input.vercelDeploymentId,
     statusDetail: null,
@@ -478,10 +523,114 @@ async function finishReadyDeployment(input: {
 }
 
 /**
- * Records the approval, then deploys for real when the managed Vercel account
- * is configured. If it is not — or if Vercel refuses — the deployment is
- * stored as PLACEHOLDER with the reason. It is never reported as live unless
- * Vercel actually returned a deployment.
+ * Runs one attempt for a deployment that already exists.
+ *
+ * The worker's entry point. Everything it needs is read from Postgres — the
+ * Redis message carries only ids — so nothing sensitive travels through the
+ * queue. Environment values are decrypted here and handed straight to the run.
+ */
+export async function runVercelAttempt(input: {
+  deploymentId: string
+  attemptId: string
+  clerkUserId: string
+  users: ClerkUsersApi
+  environmentVariables: {
+    key: string
+    value: string
+    target: "PRODUCTION" | "PREVIEW" | "DEVELOPMENT"
+  }[]
+}): Promise<SafeDeployment> {
+  const deployment = await getDeploymentRow(
+    (
+      await prisma.deployment.findUniqueOrThrow({
+        where: { id: input.deploymentId },
+        select: { userId: true },
+      })
+    ).userId,
+    input.deploymentId
+  )
+
+  if (!deployment) throw new Error("Deployment not found")
+
+  return runAttempt({
+    deploymentId: deployment.id,
+    attemptId: input.attemptId,
+    clerkUserId: input.clerkUserId,
+    users: input.users,
+    repositoryOwner: deployment.repositoryOwner,
+    repositoryName: deployment.repositoryName,
+    branch: deployment.branch,
+    framework: deployment.framework,
+    buildCommand: deployment.buildCommand,
+    rootDirectory: deployment.servicePath,
+    environmentVariables: input.environmentVariables,
+  })
+}
+
+/**
+ * Records the approval and opens the first attempt, without deploying.
+ *
+ * The deploy itself is queued: it takes minutes and cannot run inside the API
+ * request. Returns the rows the caller needs to publish the job.
+ */
+export async function prepareVercelDeployment(
+  input: ApproveInput
+): Promise<{ deployment: SafeDeployment; attemptId: string }> {
+  const deployment = await createDeployment({
+    userId: input.userId,
+    appName: input.appName,
+    repositoryName: input.repositoryName,
+    repositoryOwner: input.repositoryOwner,
+    repositoryUrl: input.repositoryUrl,
+    branch: input.branch,
+    framework: input.framework,
+    servicePath: input.servicePath,
+    buildCommand: input.buildCommand,
+  })
+
+  // Values are encrypted before they touch the database and are never read
+  // back out to the client.
+  await saveEnvironmentVariables(
+    deployment.id,
+    input.environmentVariables.map((variable) => ({
+      key: variable.key,
+      encryptedValue: encryptSecret(variable.value),
+      target: variable.target,
+    }))
+  )
+
+  const attempt = await createAttempt(deployment.id)
+
+  await appendLogs(
+    deployment.id,
+    [
+      { message: "Vercel deployment request created" },
+      {
+        message: `GitHub repository selected: ${input.repositoryOwner}/${input.repositoryName} (${input.branch})`,
+      },
+      { message: "AI repo analysis completed" },
+      {
+        message: `Environment variables prepared: ${input.environmentVariables.length}`,
+      },
+      { message: "Deployment plan generated" },
+      { message: "User approved deployment", level: "SUCCESS" },
+    ],
+    attempt.id
+  )
+
+  const queued = await updateDeploymentStatus(deployment.id, {
+    status: "QUEUED",
+    statusDetail: "Waiting for a TisiOps worker.",
+  })
+
+  return { deployment: toSafeDeployment(queued), attemptId: attempt.id }
+}
+
+/**
+ * Records the approval and deploys inline.
+ *
+ * Superseded by prepareVercelDeployment + the queue, and kept only for local
+ * runs without Redis. Do not call it from a request handler.
  */
 export async function approveAndDeploy(
   input: ApproveInput
@@ -562,6 +711,87 @@ export type RetryResult =
  * run — they are never returned to the caller, rendered, or logged. If they
  * cannot be decrypted the retry stops rather than silently deploying without
  * the values the build needs.
+ */
+export type PrepareRetryResult =
+  | { ok: true; deployment: SafeDeployment }
+  | {
+      ok: false
+      reason: "not_found" | "not_retryable" | "env_unavailable"
+      message: string
+    }
+
+/**
+ * Opens the next attempt for a retry, without running it.
+ *
+ * The same checks as retryDeployment — ownership, retryable status, whether the
+ * saved environment values can still be decrypted — but it stops before the
+ * work, which the queue picks up. Failing the decrypt check here rather than in
+ * the worker means the user is told immediately instead of watching a job fail
+ * two minutes later.
+ */
+export async function prepareVercelRetry(input: {
+  userId: string
+  deploymentId: string
+}): Promise<PrepareRetryResult> {
+  const existing = await getDeploymentRow(input.userId, input.deploymentId)
+  if (!existing) {
+    return { ok: false, reason: "not_found", message: "Deployment not found" }
+  }
+
+  if (!canRetry(existing.status)) {
+    return {
+      ok: false,
+      reason: "not_retryable",
+      message: `A ${existing.status.toLowerCase()} deployment cannot be retried.`,
+    }
+  }
+
+  const environment = await readEnvironmentVariables(input.userId, existing.id)
+
+  if (!environment.reusable) {
+    return {
+      ok: false,
+      reason: "env_unavailable",
+      message:
+        "Environment variables need to be entered again because the saved values could not be read.",
+    }
+  }
+
+  const attempt = await createAttempt(existing.id)
+
+  await appendLogs(
+    existing.id,
+    [
+      {
+        message: `Previous attempt failed: ${existing.statusDetail ?? "no reason recorded"}`,
+        level: "WARNING",
+      },
+      { message: "Retry requested by user" },
+      { message: "Reusing deployment configuration" },
+      {
+        message: `Reusing saved environment variable keys: ${environment.count}`,
+      },
+      {
+        message: `Retry attempt #${attempt.attemptNumber} queued`,
+        level: "SUCCESS",
+      },
+    ],
+    attempt.id
+  )
+
+  const queued = await updateDeploymentStatus(existing.id, {
+    status: "QUEUED",
+    statusDetail: "Retry waiting for a TisiOps worker.",
+    retryCount: existing.retryCount + 1,
+    lastRetriedAt: new Date(),
+  })
+
+  return { ok: true, deployment: toSafeDeployment(queued) }
+}
+
+/**
+ * Retries inline. Superseded by prepareVercelRetry + the queue, and kept for
+ * local runs without Redis. Do not call it from a request handler.
  */
 export async function retryDeployment(input: {
   userId: string
@@ -724,7 +954,14 @@ export async function reconcileDeployment(
   return finishReadyDeployment({
     deploymentId: existing.id,
     attemptId: attempt?.id ?? null,
-    url: outcome.url || existing.previewUrl || "",
+    deploymentUrl: outcome.url || existing.vercelDeploymentUrl || "",
+    aliases: outcome.aliases,
+    // Same inputs as the deploy produced, so this lands on the same name.
+    projectName: projectName(
+      existing.repositoryOwner,
+      existing.repositoryName,
+      existing.servicePath
+    ),
     projectId: existing.vercelProjectId,
     vercelDeploymentId: existing.vercelDeploymentId,
   })

@@ -5,7 +5,6 @@ import {
   SiN8n,
   SiN8nHex,
   SiNextdotjs,
-  SiNextdotjsHex,
   SiNodedotjs,
   SiNodedotjsHex,
   SiUbuntu,
@@ -24,7 +23,9 @@ const templates = [
     description:
       "Deploy a Next.js or React frontend from GitHub to a TisiOps-managed Vercel preview URL.",
     Icon: SiVercel,
-    color: "#000000",
+    // Monochrome mark: follows the theme instead of a fixed black, which
+    // disappears on a dark ground.
+    monochrome: true,
     href: "/dashboard/new-deployment/vercel",
   },
   {
@@ -35,16 +36,18 @@ const templates = [
   },
   {
     name: "n8n",
-    description: "Deploy an automation workflow server with basic setup.",
+    description:
+      "Run a private n8n automation server on a TisiOps-managed AWS server.",
     Icon: SiN8n,
     color: SiN8nHex,
+    href: "/dashboard/new-deployment/n8n",
   },
   {
     // simple-icons has no Amazon/AWS mark (removed at Amazon's request), so the Linux mark stands in.
     name: "AWS Linux",
     description: "Start with an Amazon Linux server environment.",
     Icon: SiLinux,
-    color: "#232F3E",
+    monochrome: true,
   },
   {
     name: "Node.js App",
@@ -56,7 +59,7 @@ const templates = [
     name: "Next.js App",
     description: "Deploy a modern Next.js web application.",
     Icon: SiNextdotjs,
-    color: SiNextdotjsHex,
+    monochrome: true,
   },
   {
     name: "Docker App",
@@ -124,9 +127,20 @@ export default async function NewDeploymentPage() {
                 {/* Fixed slot: brand marks have different aspect ratios and
                     would otherwise read at different optical sizes. */}
                 <span className="flex size-8 items-center justify-center">
+                  {/* A brand mark that is black by design cannot keep a fixed
+                      colour across themes, so those follow the text colour.
+                      Coloured marks keep theirs — they read on both grounds. */}
                   <template.Icon
-                    className="max-h-7 max-w-7"
-                    color={template.color}
+                    className={`max-h-7 max-w-7 ${
+                      "monochrome" in template && template.monochrome
+                        ? "text-ink-strong"
+                        : ""
+                    }`}
+                    color={
+                      "monochrome" in template && template.monochrome
+                        ? "currentColor"
+                        : template.color
+                    }
                     aria-hidden
                   />
                 </span>

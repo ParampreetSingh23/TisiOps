@@ -42,10 +42,7 @@ export function Hero() {
           </div>
         </div>
 
-        <div
-          id="how-it-works"
-          className="w-full scroll-mt-24 lg:justify-self-end"
-        >
+        <div className="w-full lg:justify-self-end">
           <ChatDemoCard />
         </div>
       </div>

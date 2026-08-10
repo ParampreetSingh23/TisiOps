@@ -20,7 +20,7 @@ export const LINKING_NOT_SUPPORTED =
   "This managed deployment cannot link user GitHub repos directly to the TisiOps Vercel account. Use source upload deployment or BYO Vercel mode."
 
 export const PROTECTED_PREVIEW_MESSAGE =
-  "Deployment was created, but the preview URL is protected by Vercel settings. Disable Vercel Deployment Protection for TisiOps-managed preview deployments."
+  "Deployment was created, but neither the public project URL nor the build URL opens without a Vercel login. Disable Vercel Deployment Protection for TisiOps-managed deployments."
 
 export function isVercelConfigured(): boolean {
   return Boolean(process.env.VERCEL_TOKEN)
@@ -33,20 +33,61 @@ function teamQuery(extra = ""): string {
   return query ? `?${query}` : ""
 }
 
-/** Vercel project names: lowercase, digits and dashes, 100 chars max. */
+/**
+ * Vercel project names: lowercase, digits and dashes, 100 chars max.
+ *
+ * The GitHub owner is part of the name because the project name decides the
+ * public URL: without it, two users deploying their own "notes-app" would
+ * collide on one Vercel project and overwrite each other's site.
+ */
 export function projectName(
+  repositoryOwner: string,
   repository: string,
   servicePath?: string | null
 ): string {
   const prefix = process.env.VERCEL_PROJECT_PREFIX ?? "tisiops"
   const suffix = servicePath ? `-${servicePath.replace(/\//g, "-")}` : ""
 
-  return `${prefix}-${repository}${suffix}`
+  return `${prefix}-${repositoryOwner}-${repository}${suffix}`
     .toLowerCase()
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/-{2,}/g, "-")
     .replace(/^-|-$/g, "")
     .slice(0, 100)
+}
+
+/**
+ * The URL to show the user: the project alias, never the per-build one.
+ *
+ * Vercel attaches several aliases to a finished deployment. The per-build
+ * alias carries a random build id and is the one Deployment Protection blocks;
+ * the project alias is plain `<project>.vercel.app` and stays public.
+ *
+ * `buildUrl` is excluded by name rather than by length, because a deployment
+ * whose only alias is the build URL would otherwise hand back exactly the URL
+ * this function exists to avoid.
+ */
+export function publicProjectUrl(
+  aliases: string[],
+  name: string,
+  buildUrl = ""
+): string {
+  const expected = `${name}.vercel.app`
+  const buildHost = buildUrl.replace(/^https?:\/\//, "")
+
+  const candidates = aliases.filter(
+    (entry) => entry.endsWith(".vercel.app") && entry !== buildHost
+  )
+
+  // Vercel adds a scope suffix when `<project>.vercel.app` is already taken
+  // globally, so an exact match is preferred but never assumed.
+  const alias =
+    candidates.find((entry) => entry === expected) ??
+    candidates.sort((left, right) => left.length - right.length)[0]
+
+  // No alias attached yet on a brand-new project: the name it was created with
+  // is the best guess, and the caller verifies it before showing it as live.
+  return `https://${alias ?? expected}`
 }
 
 /**
@@ -105,11 +146,21 @@ async function call(
   token: string,
   body?: unknown
 ): Promise<CallResult> {
+  return callMethod(body === undefined ? "GET" : "POST", path, token, body)
+}
+
+/** The same request, with the method chosen explicitly. */
+async function callMethod(
+  method: "GET" | "POST" | "DELETE",
+  path: string,
+  token: string,
+  body?: unknown
+): Promise<CallResult> {
   let response: Response
 
   try {
     response = await fetch(`${API}${path}`, {
-      method: body === undefined ? "GET" : "POST",
+      method,
       headers: {
         Authorization: `Bearer ${token}`,
         ...(body === undefined ? {} : { "Content-Type": "application/json" }),
@@ -171,6 +222,8 @@ async function ensureProject(
 export type VercelCreated = {
   ok: true
   projectId: string
+  /** Decides the public URL, so the caller needs it to build that URL. */
+  projectName: string
   deploymentId: string
   /** Reserved, not yet proven to work — the build has not finished. */
   reservedUrl: string
@@ -186,6 +239,7 @@ export type VercelResult = VercelCreated | { ok: false; error: string }
  * caller must wait for the real status before calling anything successful.
  */
 export async function deployFromSource(input: {
+  repositoryOwner: string
   repositoryName: string
   framework: string | null
   files: SourceFile[]
@@ -197,7 +251,11 @@ export async function deployFromSource(input: {
   const token = process.env.VERCEL_TOKEN
   if (!token) return { ok: false, error: "VERCEL_TOKEN is not configured." }
 
-  const name = projectName(input.repositoryName, input.rootDirectory)
+  const name = projectName(
+    input.repositoryOwner,
+    input.repositoryName,
+    input.rootDirectory
+  )
 
   const project = await ensureProject(
     token,
@@ -232,13 +290,39 @@ export async function deployFromSource(input: {
   return {
     ok: true,
     projectId: project.projectId,
+    projectName: name,
     deploymentId: String(deployment.data.id ?? ""),
     reservedUrl: typeof url === "string" ? `https://${url}` : "",
   }
 }
 
+/**
+ * Deletes a project and everything Vercel serves for it.
+ *
+ * Irreversible, and the only call in this client that removes anything — which
+ * is why the caller must carry a recorded confirmation before reaching it.
+ */
+export async function deleteProject(
+  idOrName: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const token = process.env.VERCEL_TOKEN
+  if (!token) return { ok: false, error: "VERCEL_TOKEN is not configured." }
+
+  const result = await callMethod(
+    "DELETE",
+    `/v9/projects/${encodeURIComponent(idOrName)}${teamQuery()}`,
+    token
+  )
+
+  // Already gone is the outcome the caller wanted, not a failure.
+  if (result.ok || result.status === 404) return { ok: true }
+
+  return { ok: false, error: result.error }
+}
+
 export type BuildOutcome =
-  | { state: "ready"; url: string }
+  /** `aliases` are the hostnames Vercel attached, project alias included. */
+  | { state: "ready"; url: string; aliases: string[] }
   | { state: "failed"; error: string }
   | { state: "cancelled" }
   | { state: "timeout"; lastState: string }
@@ -299,9 +383,15 @@ export async function waitForBuild(
       const outcome = classifyState(lastState)
       if (outcome === "ready") {
         const url = response.data.url
+        const alias = response.data.alias
         return {
           state: "ready",
           url: typeof url === "string" ? `https://${url}` : "",
+          aliases: Array.isArray(alias)
+            ? alias.filter(
+                (entry): entry is string => typeof entry === "string"
+              )
+            : [],
         }
       }
       if (outcome === "cancelled") return { state: "cancelled" }

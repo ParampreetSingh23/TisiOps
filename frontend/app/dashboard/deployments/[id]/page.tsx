@@ -1,4 +1,4 @@
-import { DeploymentStatus } from "@/components/dashboard/deployment-status"
+import { DeploymentDetail } from "@/components/dashboard/deployment-detail"
 import { requireFeature } from "@/lib/feature-guard"
 
 export const metadata = { title: "Deployment" }
@@ -11,5 +11,5 @@ export default async function DeploymentStatusPage({
   await requireFeature("deployments")
   const { id } = await params
 
-  return <DeploymentStatus id={id} />
+  return <DeploymentDetail id={id} />
 }

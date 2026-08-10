@@ -169,12 +169,10 @@ export async function recentHistory(
     select: { role: true, content: true },
   })
 
-  return messages
-    .reverse()
-    .map((message) => ({
-      role: toClientRole(message.role),
-      content: message.content,
-    }))
+  return messages.reverse().map((message) => ({
+    role: toClientRole(message.role),
+    content: message.content,
+  }))
 }
 
 /**
@@ -236,7 +234,6 @@ export async function deleteSession(
   const { count } = await prisma.aiChatSession.deleteMany({
     where: { id: sessionId, userId },
   })
-  
 
   return count > 0
 }

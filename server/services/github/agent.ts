@@ -332,11 +332,19 @@ export async function runGithubAgent(input: {
 
   const repository = named ?? remembered ?? null
   if (!repository) {
+    const isWebsiteReq = intent === "static_site_deployment"
     return {
       type: "github_repo_choice_required",
       intent,
-      message:
-        "Which repository should I look at? Pick one and I will run the check.",
+      message: isWebsiteReq
+        ? /portfolio/i.test(text)
+          ? "I’ll help deploy your portfolio website. I’ll check your GitHub repo, detect the framework or files, and prepare a safe deployment plan. Which GitHub repo should I use?"
+          : /landing\s?page/i.test(text)
+            ? "I’ll publish this landing page for you. Which GitHub repo should I use?"
+            : /client\s+website/i.test(text)
+              ? "I’ll prepare a website deployment plan. Which GitHub repo should I use?"
+              : "I’ll help deploy your website. I’ll check your GitHub repo, detect the framework or files, and prepare a safe deployment plan. Which GitHub repo should I use?"
+        : "Which repository should I look at? Pick one and I will run the check.",
       repositories,
     }
   }
@@ -408,7 +416,7 @@ export async function runGithubAgent(input: {
     servicePath: service?.path ?? null,
   }
 
-  if (intent === "github_vercel_readiness") {
+  if (intent === "github_vercel_readiness" || intent === "static_site_deployment") {
     // Asked about a specific folder that cannot run on Vercel — say why, and
     // point at the part of the repository that can.
     if (service && !service.vercelReady) {
@@ -432,14 +440,15 @@ export async function runGithubAgent(input: {
     }
 
     const target = service ?? analysis.services.find((item) => item.vercelReady)
+    const frameworkName = target?.framework ?? "website"
 
     return {
       type: "github_vercel_readiness",
       intent,
       context,
       message: target?.vercelReady
-        ? `${analysis.repository}${target.path ? ` /${target.path}` : ""} looks suitable for a TisiOps Managed Vercel Preview${target.envKeys.length > 0 ? `, once you supply ${target.envKeys.length} environment variable${target.envKeys.length === 1 ? "" : "s"}` : ""}.`
-        : `${analysis.repository} has no frontend this MVP can deploy to Vercel. ${analysis.summary}`,
+        ? `I found a ${frameworkName} website in ${analysis.repository}. I’ll deploy it using TisiOps Managed Vercel Preview.`
+        : `${analysis.repository} has no frontend website this MVP can deploy to Vercel. ${analysis.summary}`,
       analysis,
       ready: Boolean(target?.vercelReady),
       service: target ?? null,

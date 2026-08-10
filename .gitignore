@@ -3,3 +3,13 @@ node_modules/
 .env.*
 !.env.example
 .DS_Store
+
+# Terraform working directories and state — generated per deployment.
+# Generated per-deployment working directories and state. The directory itself
+# is tracked so the path exists in a fresh clone.
+server/infra/terraform/deployments/*
+!server/infra/terraform/deployments/.gitkeep
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars

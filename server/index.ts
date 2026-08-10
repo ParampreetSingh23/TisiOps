@@ -5,7 +5,7 @@ import express from "express"
 // Env comes from --env-file=.env in the npm script: ESM hoists imports above
 // any dotenv call here, so the database module would load before it ran.
 import { syncCurrentUserById } from "./auth/express"
-import { checkDatabaseConnection } from "./db/prisma"
+import { checkDatabaseConnection, prisma } from "./db/prisma"
 import { verifyAwsCredentials } from "./services/aws/sts"
 import {
   appendTurn,
@@ -18,7 +18,7 @@ import {
   ownsSession,
   recentHistory,
 } from "./services/chat-session-service"
-import { askMistral } from "./services/chat-service"
+import { AiLimitError, askMistral } from "./services/chat-service"
 import { getGithubStatus } from "./services/github/status"
 import {
   getAwsConnectionStatus,
@@ -33,12 +33,36 @@ import {
   listDeployments,
 } from "./services/deployments/index"
 import {
-  approveAndDeploy,
   DEPLOYMENT_PLAN,
+  prepareVercelDeployment,
+  prepareVercelRetry,
   reconcileDeployment,
-  retryDeployment,
   startVercelFlow,
 } from "./services/vercel/agent"
+import {
+  createAndQueueJob,
+  listJobsForDeployment,
+  QUEUE_UNAVAILABLE,
+} from "./services/deployment-job.service"
+import {
+  actionsFor,
+  runAction,
+  type Action,
+} from "./services/deployments/lifecycle.service"
+import { queueCounts } from "./queues/deployment.queue"
+import { platformUsageToday, usageSummary } from "./services/ai/usage.service"
+import { demoUsageToday, runDemoPrompt } from "./services/ai/demo.service"
+import { startDeploymentWorker } from "./workers/deployment.worker"
+import {
+  detectDrift,
+  explainInspection,
+  generateCleanupPlan,
+  generateRetryPlan,
+  inspectDeployment,
+  proposeTerraformDeployment,
+} from "./services/terraform/terraformAgent"
+import { availableTemplates } from "./services/terraform/terraformTemplateRegistry"
+import { pingRedis, redisTarget } from "./queues/redis"
 import { analyzeRepository } from "./services/github/analyze"
 import { runGithubAgent } from "./services/github/agent"
 import { detectIntent, isGithubIntent } from "./services/github/intent"
@@ -51,7 +75,39 @@ import {
 import {
   analyzeRepositorySchema,
   approveDeploymentSchema,
+  n8nDeploymentSchema,
+  terraformPlanSchema,
 } from "./validations/deployment"
+import { isAdminEmail } from "./constants/index"
+import {
+  ACTIVE_LIMIT_MESSAGE,
+  countActiveN8n,
+  COST_WARNING,
+  createManagedN8nDeployment,
+  getN8nProgress,
+  getServerFor,
+  retryManagedN8nDeployment,
+} from "./services/n8n/index"
+import { buildDeploymentPlan } from "./services/n8n/planner"
+import {
+  APPROVE_LABEL,
+  QUICK_START_MESSAGE,
+  QUICK_START_NEXT_STEP,
+  QUICK_START_WARNING,
+  n8nTemplateSummary,
+  quickStartConfig,
+  quickStartPlan,
+} from "./services/n8n/console"
+import { getTemplateById } from "./services/templates/template-registry"
+import {
+  ALLOWED_REGIONS,
+  DEFAULT_REGION,
+  DEFAULT_TIMEZONE,
+  SERVER_PLANS,
+  subdomainAutomationEnabled,
+  SUBDOMAIN_UNAVAILABLE,
+  validateN8nConfig,
+} from "./services/n8n/plans"
 
 const PORT = Number(process.env.PORT ?? 5001)
 // Trailing slash stripped: browsers compare Access-Control-Allow-Origin against
@@ -114,6 +170,53 @@ async function requireDbUser(req: express.Request, res: express.Response) {
 
   return user
 }
+
+/**
+ * Records that the work could not be handed to the queue.
+ *
+ * The Deployment row is deliberately left in place: Postgres is the source of
+ * truth, so a queue outage costs the user a retry, never their deployment.
+ */
+/** Role from the database row plus the allowlist — never from the request. */
+function callerIsAdmin(user: { role: string; email: string }): boolean {
+  return user.role === "ADMIN" || isAdminEmail(user.email)
+}
+
+async function markDeploymentUnqueued(deploymentId: string): Promise<void> {
+  await prisma.deployment.update({
+    where: { id: deploymentId },
+    data: { status: "FAILED", statusDetail: QUEUE_UNAVAILABLE },
+  })
+}
+
+/**
+ * The landing page's free prompt. The only unauthenticated model route.
+ *
+ * Everything that bounds it lives in demo.service: input length, output
+ * tokens, a per-address allowance, and a global daily ceiling. This handler
+ * only resolves the caller's address and hands it over.
+ */
+app.post("/api/public/ai/demo", async (req, res) => {
+  // Behind Render and Vercel the socket address is the proxy, so the
+  // forwarded address is used when present. It is only ever a rate-limit key,
+  // never an identity or a permission — a spoofed value costs its owner their
+  // own allowance and nothing else.
+  const forwarded = String(req.headers["x-forwarded-for"] ?? "")
+    .split(",")[0]
+    .trim()
+
+  const result = await runDemoPrompt({
+    address: forwarded || req.socket.remoteAddress || "unknown",
+    message: String(req.body?.message ?? ""),
+  })
+
+  if (!result.ok) {
+    res.status(result.status).json({ success: false, error: result.error })
+    return
+  }
+
+  res.json({ success: true, data: { answer: result.answer } })
+})
 
 app.get("/api/me", async (req, res) => {
   const user = await requireDbUser(req, res)
@@ -287,12 +390,24 @@ app.get("/api/chat/sessions/:id", async (req, res) => {
   // says whether that text opened a guided flow.
   const messages = session.messages.map((message, index) => {
     const previous = session.messages[index - 1]
-    const opensFlow =
-      message.role === "assistant" &&
-      previous?.role === "user" &&
-      detectIntent(previous.content) === "vercel_deployment"
 
-    return opensFlow ? { ...message, opensVercelFlow: true } : message
+    if (message.role !== "assistant" || previous?.role !== "user") {
+      return message
+    }
+
+    const intent = detectIntent(previous.content)
+
+    if (intent === "vercel_deployment") {
+      return { ...message, opensVercelFlow: true }
+    }
+
+    // The n8n card reads its own defaults from /api/deployments/n8n/quick-start,
+    // so reopening a chat needs nothing more than this flag.
+    if (intent === "n8n_managed_server_deployment") {
+      return { ...message, opensN8nFlow: true }
+    }
+
+    return message
   })
 
   res.json({ success: true, data: { ...session, messages } })
@@ -337,6 +452,74 @@ app.post("/api/chat/sessions/:id/messages", async (req, res) => {
   }
 
   const { content } = parsed.data
+
+  const isApprovalPhrase = /^\s*(yes|yep|yeah|sure|approve|approved|proceed|go ahead|start it|deploy it|start|do it|ok|okay)\s*$/i.test(
+    content.trim()
+  )
+
+  if (isApprovalPhrase) {
+    const history = await recentHistory(user.id, sessionId)
+    const hasN8nProposal = history.some((msg) =>
+      /n8n|aws-n8n-server|n8n_deployment_flow/i.test(msg.content)
+    )
+
+    if (hasN8nProposal) {
+      const n8nConfig = quickStartConfig({ email: user.email, name: user.name })
+      const result = await createManagedN8nDeployment({
+        userId: user.id,
+        isAdmin: callerIsAdmin(user),
+        config: n8nConfig,
+      })
+
+      if (result.ok) {
+        // The closing note is the template's own instruction rather than a
+        // second copy of it, so the manifest and the chat cannot disagree.
+        const firstLogin = getTemplateById("aws-n8n-server").spec.instructions
+          .find((entry) => entry.title === "First login")?.content
+
+        const replyMessage = `Approved. I’ve queued the n8n deployment.\n\nDeployment:\n${n8nConfig.workspaceName}\n\nStatus:\nQUEUED\n\nTrack progress:\n/dashboard/deployments/${result.deploymentId}\n\nCurrent step:\nWaiting for worker\n\nYou will receive the n8n URL once provisioning completes. ${firstLogin ?? ""}`.trimEnd()
+
+        await appendTurn({
+          userId: user.id,
+          sessionId,
+          userContent: content,
+          assistantContent: replyMessage,
+        })
+
+        res.json({
+          success: true,
+          data: {
+            type: "n8n_deployment_flow",
+            intent: "n8n_managed_server_deployment",
+            message: replyMessage,
+            nextStep: "Track deployment progress",
+            deploymentId: result.deploymentId,
+            opensN8nFlow: true,
+          },
+        })
+        return
+      } else {
+        const replyMessage = `Could not queue n8n deployment: ${result.error}`
+        await appendTurn({
+          userId: user.id,
+          sessionId,
+          userContent: content,
+          assistantContent: replyMessage,
+        })
+
+        res.json({
+          success: true,
+          data: {
+            type: "answer",
+            intent: "n8n_managed_server_deployment",
+            message: replyMessage,
+          },
+        })
+        return
+      }
+    }
+  }
+
   const intent = detectIntent(content)
 
   try {
@@ -354,27 +537,53 @@ app.post("/api/chat/sessions/:id/messages", async (req, res) => {
               "Starting a TisiOps Managed Vercel Preview. Pick the repository and branch, add environment variables, then approve the plan — nothing deploys before that.",
             nextStep: "Open the guided deployment steps below",
           }
-        : // GitHub questions are answered from the user's real repositories,
-          // not by the model guessing at what they might contain.
-          isGithubIntent(intent)
-          ? await runGithubAgent({
-              clerkUserId: user.clerkId,
-              users: clerkClient.users,
-              intent,
-              text: content,
-              // Lets "this repo" and "deploy the frontend" resolve without
-              // the user naming the repository again. Scoped to this user's
-              // own session, so it can never point at someone else's repo.
-              context: await getSessionContext(user.id, sessionId),
-            })
-          : {
-              type: "answer" as const,
-              intent,
-              message: await askMistral([
-                ...(await recentHistory(user.id, sessionId)),
-                { role: "user" as const, content },
-              ]),
-            }
+        : // The n8n template is one fixed deployment, so the console proposes it
+          // rather than interviewing the user about regions, instance types,
+          // domains, SSL, or ports. The card below carries the defaults and the
+          // approval button; nothing is created before that button is pressed.
+          intent === "n8n_managed_server_deployment"
+          ? managedN8nAvailable()
+            ? {
+                type: "n8n_deployment_flow" as const,
+                intent,
+                message: QUICK_START_MESSAGE,
+                nextStep: QUICK_START_NEXT_STEP,
+              }
+            : {
+                type: "answer" as const,
+                intent,
+                message:
+                  "Managed n8n deployments are not enabled on this TisiOps instance yet.",
+              }
+        : // Terraform questions are answered from the deployment's own records
+          // — template, outputs, state, job history — because a plausible but
+          // wrong claim about someone's infrastructure is worse than none.
+          intent === "terraform_agent"
+          ? await answerTerraformQuestion(user.id, content)
+          : // GitHub questions are answered from the user's real repositories,
+            // not by the model guessing at what they might contain.
+            isGithubIntent(intent)
+            ? await runGithubAgent({
+                clerkUserId: user.clerkId,
+                users: clerkClient.users,
+                intent,
+                text: content,
+                // Lets "this repo" and "deploy the frontend" resolve without
+                // the user naming the repository again. Scoped to this user's
+                // own session, so it can never point at someone else's repo.
+                context: await getSessionContext(user.id, sessionId),
+              })
+            : {
+                type: "answer" as const,
+                intent,
+                message: await askMistral(
+                  [
+                    ...(await recentHistory(user.id, sessionId)),
+                    { role: "user" as const, content },
+                  ],
+                  { userId: user.id, isAdmin: callerIsAdmin(user) }
+                ),
+              }
 
     // Remember which repository the conversation moved to.
     if ("context" in response && response.context) {
@@ -395,10 +604,52 @@ app.post("/api/chat/sessions/:id/messages", async (req, res) => {
 
     res.json({ success: true, data: response })
   } catch (error) {
+    // A spent limit is the user's answer, not a server fault: 429 with the
+    // written message, and nothing was sent to the provider.
+    if (error instanceof AiLimitError) {
+      res
+        .status(429)
+        .json({ success: false, error: error.message, reason: error.reason })
+      return
+    }
+
     const message = error instanceof Error ? error.message : "Unknown error"
     console.error("chat failed:", message)
     res.status(502).json({ success: false, error: message })
   }
+})
+
+/**
+ * The caller's own AI usage. Scoped to the session's user, so one account can
+ * never read another's numbers.
+ */
+app.get("/api/ai/usage", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  res.json({
+    success: true,
+    data: await usageSummary(user.id, callerIsAdmin(user)),
+  })
+})
+
+/** Platform AI usage, for admins. Aggregates only — never prompts or replies. */
+app.get("/api/admin/ai/usage", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  if (!callerIsAdmin(user)) {
+    res.status(403).json({ success: false, error: "Admins only" })
+    return
+  }
+
+  res.json({
+    success: true,
+    data: {
+      ...(await platformUsageToday()),
+      publicDemoMessages: await demoUsageToday(),
+    },
+  })
 })
 
 /**
@@ -460,13 +711,27 @@ app.post("/api/deployments/vercel/approve", async (req, res) => {
   }
 
   try {
-    const deployment = await approveAndDeploy({
+    // Records the approval and opens the attempt, then hands the work to the
+    // queue. The build takes minutes and must not run inside this request.
+    const { deployment } = await prepareVercelDeployment({
       userId: user.id,
       // Identity comes from the session, never from the request body.
       clerkUserId: user.clerkId,
       users: clerkClient.users,
       ...parsed.data,
     })
+
+    const queued = await createAndQueueJob({
+      deploymentId: deployment.id,
+      type: "VERCEL_DEPLOYMENT",
+      payload: {},
+    })
+
+    if (!queued.ok) {
+      await markDeploymentUnqueued(deployment.id)
+      res.status(503).json({ success: false, error: QUEUE_UNAVAILABLE })
+      return
+    }
 
     res.status(201).json({ success: true, data: deployment })
   } catch (error) {
@@ -531,10 +796,10 @@ app.post("/api/deployments/:id/retry", async (req, res) => {
   if (!user) return
 
   try {
-    const result = await retryDeployment({
+    // Opens the next attempt and reuses the saved configuration, then queues
+    // the run — the retry follows exactly the same path as the first deploy.
+    const result = await prepareVercelRetry({
       userId: user.id,
-      clerkUserId: user.clerkId,
-      users: clerkClient.users,
       deploymentId: req.params.id,
     })
 
@@ -542,6 +807,18 @@ app.post("/api/deployments/:id/retry", async (req, res) => {
       res
         .status(result.reason === "not_found" ? 404 : 409)
         .json({ success: false, error: result.message })
+      return
+    }
+
+    const queued = await createAndQueueJob({
+      deploymentId: result.deployment.id,
+      type: "RETRY_DEPLOYMENT",
+      payload: {},
+    })
+
+    if (!queued.ok) {
+      await markDeploymentUnqueued(result.deployment.id)
+      res.status(503).json({ success: false, error: QUEUE_UNAVAILABLE })
       return
     }
 
@@ -582,6 +859,507 @@ app.get("/api/deployments/:id/logs", async (req, res) => {
   res.json({ success: true, data: logs })
 })
 
-app.listen(PORT, () => {
+/**
+ * Managed n8n. Every route below derives the owner from the Clerk session and
+ * scopes its query to that user, and none of them runs Terraform — the deploy
+ * route writes a job row and returns.
+ *
+ * Open to every signed-in user, gated only by MANAGED_N8N_ENABLED. The AWS
+ * bill still lands on TisiOps, so the spend controls that remain are the
+ * region and instance-type allowlists in services/n8n/plans.ts and the
+ * one-active-deployment limit per non-admin account. Neither stops the same
+ * person signing up twice — an AWS Budget alert on the account is the backstop.
+ */
+function managedN8nAvailable(): boolean {
+  return process.env.MANAGED_N8N_ENABLED === "true"
+}
+
+async function requireN8nAccess(req: express.Request, res: express.Response) {
+  const user = await requireDbUser(req, res)
+  if (!user) return null
+
+  if (!managedN8nAvailable()) {
+    res.status(403).json({
+      success: false,
+      error:
+        "Managed n8n deployments are not enabled on this TisiOps instance.",
+    })
+    return null
+  }
+
+  return user
+}
+
+app.get("/api/deployments/n8n/options", async (req, res) => {
+  const user = await requireN8nAccess(req, res)
+  if (!user) return
+
+  res.json({
+    success: true,
+    data: {
+      plans: SERVER_PLANS,
+      regions: ALLOWED_REGIONS,
+      defaultRegion: DEFAULT_REGION,
+      defaultTimezone: DEFAULT_TIMEZONE,
+      costWarning: COST_WARNING,
+      subdomainAutomation: subdomainAutomationEnabled(),
+      subdomainNotice: SUBDOMAIN_UNAVAILABLE,
+      activeDeployments: await countActiveN8n(user.id),
+    },
+  })
+})
+
+/**
+ * The AI Console's one-click n8n deployment.
+ *
+ * Returns what TisiOps intends to build and the request that would build it.
+ * Reading it creates nothing — the config still has to come back to
+ * /api/deployments/n8n/deploy, which revalidates it, so this is a proposal
+ * rather than a decision.
+ */
+app.get("/api/deployments/n8n/quick-start", async (req, res) => {
+  const user = await requireN8nAccess(req, res)
+  if (!user) return
+
+  res.json({
+    success: true,
+    data: {
+      config: quickStartConfig({ email: user.email, name: user.name }),
+      plan: quickStartPlan(),
+      // Description only, straight from the YAML manifest. Carries no secret:
+      // the manifest names secrets, it never holds one.
+      template: n8nTemplateSummary(),
+      warning: QUICK_START_WARNING,
+      approveLabel: APPROVE_LABEL,
+      activeDeployments: await countActiveN8n(user.id),
+      activeLimitMessage: ACTIVE_LIMIT_MESSAGE,
+    },
+  })
+})
+
+app.post("/api/deployments/n8n/plan", async (req, res) => {
+  const user = await requireN8nAccess(req, res)
+  if (!user) return
+
+  const parsed = n8nDeploymentSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(422).json({ success: false, error: firstIssue(parsed.error) })
+    return
+  }
+
+  const validated = validateN8nConfig(parsed.data)
+  if (!validated.ok) {
+    res.status(422).json({ success: false, error: validated.error })
+    return
+  }
+
+  // Planning has no side effects: no rows, no AWS calls, nothing to undo.
+  res.json({
+    success: true,
+    data: {
+      config: validated.config,
+      plan: await buildDeploymentPlan(validated.config, {
+        userId: user.id,
+        isAdmin: callerIsAdmin(user),
+      }),
+    },
+  })
+})
+
+app.post("/api/deployments/n8n/deploy", async (req, res) => {
+  const user = await requireN8nAccess(req, res)
+  if (!user) return
+
+  const parsed = n8nDeploymentSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(422).json({ success: false, error: firstIssue(parsed.error) })
+    return
+  }
+
+  const result = await createManagedN8nDeployment({
+    userId: user.id,
+    isAdmin: user.role === "ADMIN" || isAdminEmail(user.email),
+    config: parsed.data,
+  })
+
+  if (!result.ok) {
+    res.status(422).json({ success: false, error: result.error })
+    return
+  }
+
+  res.status(201).json({ success: true, data: { id: result.deploymentId } })
+})
+
+app.get("/api/deployments/:id/progress", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const progress = await getN8nProgress(user.id, req.params.id)
+  if (!progress) {
+    res.status(404).json({ success: false, error: "Deployment not found" })
+    return
+  }
+
+  res.json({
+    success: true,
+    data: { ...progress, server: await getServerFor(user.id, req.params.id) },
+  })
+})
+
+app.post("/api/deployments/:id/n8n/retry", async (req, res) => {
+  const user = await requireN8nAccess(req, res)
+  if (!user) return
+
+  const result = await retryManagedN8nDeployment({
+    userId: user.id,
+    deploymentId: req.params.id,
+  })
+
+  if (!result.ok) {
+    res.status(422).json({ success: false, error: result.error })
+    return
+  }
+
+  res.json({ success: true, data: { id: result.deploymentId } })
+})
+
+app.get("/api/deployments/:id/jobs", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  // Scoped through the deployment, so another user's job history is a 404.
+  const jobs = await listJobsForDeployment(user.id, req.params.id)
+  if (!jobs) {
+    res.status(404).json({ success: false, error: "Deployment not found" })
+    return
+  }
+
+  res.json({ success: true, data: jobs })
+})
+
+/**
+ * Queue health, for admins.
+ *
+ * Counts and a boolean only. The Redis URL carries the password in its
+ * userinfo, so neither it nor the host is ever returned — `redisTarget()` is
+ * used for the worker's own stdout, not for this response.
+ */
+/**
+ * terraform_agent routes.
+ *
+ * Read and plan only. None of them runs Terraform: the destroy route writes a
+ * job row after a typed confirmation, and the worker does the work.
+ */
+
+/**
+ * The console's Terraform answer.
+ *
+ * Uses the user's most recent deployment when they do not name one, and asks
+ * them to pick when there is nothing to talk about. Never invents Terraform.
+ */
+async function answerTerraformQuestion(userId: string, text: string) {
+  const latest = await prisma.deployment.findFirst({
+    where: { userId, template: { not: null } },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  })
+
+  if (!latest) {
+    return {
+      type: "answer" as const,
+      intent: "terraform_agent" as const,
+      message:
+        "You have no infrastructure deployments yet. TisiOps provisions servers with fixed Terraform modules — start one from New Deployment and I can explain what it creates, why it failed, or how to retry it.",
+    }
+  }
+
+  const inspection = await inspectDeployment(userId, latest.id)
+  if (!inspection) {
+    return {
+      type: "answer" as const,
+      intent: "terraform_agent" as const,
+      message: "Select a deployment and I can explain its infrastructure.",
+    }
+  }
+
+  const wantsDestroy = /\b(destroy|tear\s?down|delete|clean\s?up)\b/i.test(text)
+  const plan = wantsDestroy
+    ? generateCleanupPlan(inspection)
+    : inspection.canRetry
+      ? generateRetryPlan(inspection)
+      : null
+
+  const parts = [explainInspection(inspection)]
+
+  if (plan) {
+    parts.push(
+      "",
+      `${plan.title}:`,
+      ...plan.steps.map((step) => `- ${step}`),
+      ...plan.warnings.map((warning) => `Warning: ${warning}`)
+    )
+
+    if (plan.confirmationPhrase) {
+      parts.push(
+        `This is destructive. Type ${plan.confirmationPhrase} on the deployment page to confirm — I will not run it from here.`
+      )
+    }
+  }
+
+  return {
+    type: "answer" as const,
+    intent: "terraform_agent" as const,
+    message: parts.join("\n"),
+  }
+}
+
+app.get("/api/terraform/templates", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  // The registry itself, minus nothing sensitive — it is a catalogue.
+  res.json({ success: true, data: availableTemplates() })
+})
+
+app.post("/api/terraform/plan", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const parsed = terraformPlanSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(422).json({ success: false, error: firstIssue(parsed.error) })
+    return
+  }
+
+  // Ownership first: a plan for someone else's deployment is a 404, the same
+  // answer as an id that never existed.
+  const owned = await prisma.deployment.findFirst({
+    where: { id: parsed.data.deploymentId, userId: user.id },
+    select: { id: true },
+  })
+
+  if (!owned) {
+    res.status(404).json({ success: false, error: "Deployment not found" })
+    return
+  }
+
+  const proposal = proposeTerraformDeployment({
+    template: parsed.data.template,
+    deploymentId: parsed.data.deploymentId,
+    projectName: parsed.data.projectName,
+    region: parsed.data.region,
+    instanceType: parsed.data.instanceType,
+    volumeSize: parsed.data.volumeSize ?? undefined,
+    allowedSshCidr: parsed.data.allowedSshCidr ?? undefined,
+    environment: parsed.data.environment,
+  })
+
+  if (!proposal.ok) {
+    res.status(422).json({ success: false, error: proposal.error })
+    return
+  }
+
+  res.json({ success: true, data: proposal.proposal })
+})
+
+app.get("/api/deployments/:id/terraform", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const inspection = await inspectDeployment(user.id, req.params.id)
+  if (!inspection) {
+    res.status(404).json({ success: false, error: "Deployment not found" })
+    return
+  }
+
+  res.json({
+    success: true,
+    data: {
+      ...inspection,
+      explanation: explainInspection(inspection),
+      retryPlan: inspection.canRetry ? generateRetryPlan(inspection) : null,
+      cleanupPlan: inspection.canDestroy
+        ? generateCleanupPlan(inspection)
+        : null,
+      drift: detectDrift(inspection),
+    },
+  })
+})
+
+/**
+ * Destroy. The one route that removes infrastructure.
+ *
+ * Requires the exact confirmation phrase in the body. The phrase is checked
+ * here, recorded on the deployment, and checked again by the handler — a queue
+ * message alone is never treated as consent.
+ */
+app.post("/api/deployments/:id/terraform/destroy", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const deployment = await prisma.deployment.findFirst({
+    where: { id: req.params.id, userId: user.id },
+  })
+
+  if (!deployment) {
+    res.status(404).json({ success: false, error: "Deployment not found" })
+    return
+  }
+
+  if (req.body?.confirm !== "DELETE") {
+    res.status(422).json({
+      success: false,
+      error: "Type DELETE to confirm destroying this deployment.",
+    })
+    return
+  }
+
+  if (!deployment.template) {
+    res.status(422).json({
+      success: false,
+      error: "This deployment has no infrastructure to destroy.",
+    })
+    return
+  }
+
+  const approved = await prisma.deployment.update({
+    where: { id: deployment.id },
+    data: { destroyApprovedAt: new Date() },
+  })
+
+  const queued = await createAndQueueJob({
+    deploymentId: approved.id,
+    type: "TERRAFORM_DESTROY",
+    payload: {},
+  })
+
+  if (!queued.ok) {
+    res.status(503).json({ success: false, error: QUEUE_UNAVAILABLE })
+    return
+  }
+
+  res.json({ success: true, data: { id: approved.id } })
+})
+
+/**
+ * Deployment lifecycle: stop, start, delete, remove.
+ *
+ * One route for every deployment type — the service decides what each action
+ * means from the deployment's own record. Nothing here touches a provider: the
+ * work is queued and the worker does it.
+ */
+app.get("/api/deployments/:id/actions", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const actions = await actionsFor(user.id, req.params.id)
+  if (!actions) {
+    res.status(404).json({ success: false, error: "Deployment not found" })
+    return
+  }
+
+  res.json({ success: true, data: actions })
+})
+
+app.post("/api/deployments/:id/actions/:action", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const action = req.params.action as Action
+  if (!["stop", "start", "delete", "remove"].includes(action)) {
+    res.status(422).json({ success: false, error: "Unknown action." })
+    return
+  }
+
+  const result = await runAction({
+    userId: user.id,
+    deploymentId: req.params.id,
+    action,
+    confirm: req.body?.confirm,
+  })
+
+  if (!result.ok) {
+    res.status(result.status).json({ success: false, error: result.error })
+    return
+  }
+
+  res.json({ success: true, data: { queued: result.queued } })
+})
+
+app.get("/api/admin/queue/health", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  if (user.role !== "ADMIN" && !isAdminEmail(user.email)) {
+    res.status(403).json({ success: false, error: "Admins only" })
+    return
+  }
+
+  const ping = await pingRedis()
+  const counts = await queueCounts()
+
+  const [running, queued] = await Promise.all([
+    prisma.deploymentJob.count({ where: { status: "RUNNING" } }),
+    prisma.deploymentJob.count({
+      where: { status: { in: ["PENDING", "QUEUED"] } },
+    }),
+  ])
+
+  res.json({
+    success: true,
+    data: {
+      redisConnected: ping.redisConnected,
+      provider: ping.provider,
+      error: ping.error ?? null,
+      queue: counts,
+      // From Postgres, so this stays true even when Redis is unreachable.
+      postgres: { runningJobs: running, waitingJobs: queued },
+      workerSeen: running > 0,
+    },
+  })
+})
+
+/**
+ * The deployment worker runs in this process unless told otherwise.
+ *
+ * One service is enough at this volume, and it means starting the backend is
+ * all it takes for queued deployments to run. Terraform is spawned as a child
+ * process, so a job is I/O-bound here and does not block the HTTP server — and
+ * it is still never run inside a request, because the queue sits between them.
+ *
+ * Set RUN_WORKER_IN_API=false when the worker is deployed as its own service,
+ * so the two do not both consume from the queue.
+ */
+const runWorkerInApi = process.env.RUN_WORKER_IN_API !== "false"
+
+const server = app.listen(PORT, async () => {
   console.log(`TisiOps API on http://localhost:${PORT} (CORS: ${FRONTEND_URL})`)
+
+  if (!runWorkerInApi) {
+    console.log("Deployment worker disabled here — run `npm run worker`.")
+    return
+  }
+
+  const worker = await startDeploymentWorker()
+
+  if (!worker) {
+    // Not fatal: everything that does not need the queue still works, and the
+    // reason was already printed.
+    console.log("Deployment worker not started — deployments will stay queued.")
+    return
+  }
+
+  console.log("Deployment worker running in this process.")
+
+  // The in-flight job finishes before the process exits. Killing a Terraform
+  // apply midway is what leaves an EC2 instance nobody has a record of.
+  const stop = async (signal: string) => {
+    console.log(`${signal} received — finishing the current deployment job`)
+    server.close()
+    await worker.stop()
+    process.exit(0)
+  }
+
+  process.on("SIGINT", () => void stop("SIGINT"))
+  process.on("SIGTERM", () => void stop("SIGTERM"))
 })

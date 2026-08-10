@@ -2,6 +2,8 @@
 
 import { UserButton } from "@clerk/nextjs"
 import {
+  BookOpen,
+  ExternalLink,
   FileText,
   LayoutDashboard,
   Rocket,
@@ -14,12 +16,17 @@ import {
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 
+import { TisiOpsLogo } from "@/components/brand/logo"
+import { DeploymentNav } from "@/components/dashboard/deployment-nav"
+import { ThemeToggleRow } from "@/components/theme-toggle"
 import type { FeatureKey } from "@/lib/features"
 
 type NavItem = {
   href: string
   label: string
   icon: typeof LayoutDashboard
+  target?: string
+  rel?: string
   /** Absent for items that no feature flag governs, such as the Admin Panel. */
   feature?: FeatureKey
 }
@@ -72,13 +79,20 @@ const groups: { label: string; items: NavItem[] }[] = [
     ],
   },
   {
-    label: "Account",
+    label: "Account & Help",
     items: [
       {
         href: "/dashboard/settings",
         label: "Settings",
         icon: Settings,
         feature: "settings",
+      },
+      {
+        href: "/docs",
+        label: "Docs",
+        icon: BookOpen,
+        target: "_blank",
+        rel: "noopener noreferrer",
       },
     ],
   },
@@ -115,12 +129,7 @@ export function DashboardSidebar({
   return (
     <aside className="flex scrollbar-subtle shrink-0 flex-col gap-6 border-b border-line bg-surface p-4 lg:sticky lg:top-0 lg:h-svh lg:w-60 lg:overflow-y-auto lg:border-r lg:border-b-0 lg:p-5">
       <div className="flex items-center justify-between gap-3">
-        <Link
-          href="/"
-          className="font-heading text-lg font-semibold tracking-[-0.02em] text-ink-strong transition-colors duration-150 ease-out hover:text-brand"
-        >
-          TisiOps
-        </Link>
+        <TisiOpsLogo href="/" />
         <UserButton />
       </div>
 
@@ -132,11 +141,20 @@ export function DashboardSidebar({
             </p>
             <ul className="mt-2 flex flex-wrap gap-1 lg:flex-col lg:flex-nowrap">
               {group.items.map((item) => {
+                // Deployments is a tree, not a destination: clicking it opens
+                // the templates below it. "View all deployments" inside keeps
+                // /dashboard/deployments one click away.
+                if (item.href === "/dashboard/deployments") {
+                  return <DeploymentNav key={item.href} />
+                }
+
                 const isActive = pathname === item.href
                 return (
                   <li key={item.href}>
                     <Link
                       href={item.href}
+                      target={item.target}
+                      rel={item.rel}
                       aria-current={isActive ? "page" : undefined}
                       className={
                         isActive
@@ -145,7 +163,10 @@ export function DashboardSidebar({
                       }
                     >
                       <item.icon className="size-4 shrink-0" aria-hidden />
-                      {item.label}
+                      <span className="flex-1">{item.label}</span>
+                      {item.target === "_blank" ? (
+                        <ExternalLink className="size-3 text-ink-muted shrink-0" />
+                      ) : null}
                     </Link>
                   </li>
                 )
@@ -154,6 +175,11 @@ export function DashboardSidebar({
           </div>
         ))}
       </nav>
+
+      {/* Sits below the navigation so it never competes with it. */}
+      <div className="mt-auto border-t border-line pt-3">
+        <ThemeToggleRow />
+      </div>
     </aside>
   )
 }

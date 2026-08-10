@@ -29,7 +29,10 @@ export type SafeDeployment = {
   failureCode: string | null
   /** True when the failure is fixed by reconnecting GitHub. */
   needsGithubReconnect: boolean
+  /** The public project URL — the only one the user is asked to open. */
   previewUrl: string | null
+  /** The per-build URL, shown as a debugging detail rather than a link. */
+  vercelDeploymentUrl: string | null
   vercelProjectId: string | null
   vercelDeploymentId: string | null
   servicePath: string | null
@@ -105,6 +108,7 @@ export function toSafeDeployment(
       ? (SOURCE_ERRORS[row.failureCode as SourceErrorCode]?.reconnect ?? false)
       : false,
     previewUrl: row.previewUrl,
+    vercelDeploymentUrl: row.vercelDeploymentUrl,
     vercelProjectId: row.vercelProjectId,
     vercelDeploymentId: row.vercelDeploymentId,
     servicePath: row.servicePath,
@@ -169,10 +173,18 @@ export async function appendLog(
   deploymentId: string,
   message: string,
   level: DeploymentLog["level"] = "INFO",
-  attemptId?: string | null
+  attemptId?: string | null,
+  /** Set instead of attemptId for worker-driven runs. */
+  jobId?: string | null
 ) {
   return prisma.deploymentLog.create({
-    data: { deploymentId, message, level, attemptId: attemptId ?? null },
+    data: {
+      deploymentId,
+      message,
+      level,
+      attemptId: attemptId ?? null,
+      jobId: jobId ?? null,
+    },
   })
 }
 
@@ -307,12 +319,16 @@ export async function updateDeploymentStatus(
     retryCount?: number
     lastRetriedAt?: Date
     previewUrl?: string | null
+    vercelDeploymentUrl?: string | null
     vercelProjectId?: string | null
     vercelDeploymentId?: string | null
     statusDetail?: string | null
   }
 ) {
-  return prisma.deployment.update({ where: { id: deploymentId }, data: update })
+  return prisma.deployment.update({
+    where: { id: deploymentId },
+    data: update,
+  })
 }
 
 export async function listDeployments(

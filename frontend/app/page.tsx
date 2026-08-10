@@ -1,7 +1,11 @@
 import type { Metadata } from "next"
 
+import { FinalCta } from "@/components/landing/final-cta"
 import { Hero } from "@/components/landing/hero"
+import { HowItWorks } from "@/components/landing/how-it-works"
 import { Navbar } from "@/components/landing/navbar"
+import { Templates } from "@/components/landing/templates"
+import { WhyTisiOps } from "@/components/landing/why-tisiops"
 
 export const metadata: Metadata = {
   title: "TisiOps — Deploy apps using natural language",
@@ -15,6 +19,10 @@ export default function Page() {
       <Navbar />
       <main className="flex-1">
         <Hero />
+        <WhyTisiOps />
+        <Templates />
+        <HowItWorks />
+        <FinalCta />
       </main>
     </div>
   )

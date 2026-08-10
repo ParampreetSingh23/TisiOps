@@ -1,0 +1,210 @@
+# TisiOps template manifest — aws-n8n-server
+#
+# Describes the managed n8n deployment. It does NOT execute it: the worker and
+# services/bootstrap/n8nBootstrap.service.ts still build and run the stack.
+# See server/services/templates/template-registry.ts for what reads this.
+#
+# Never put a real secret in this file. Secrets are named here and generated at
+# deploy time by generateSecrets().
+
+apiVersion: tisiops.com/v1
+kind: Template
+
+metadata:
+  id: aws-n8n-server
+  name: n8n Managed Server
+  description: Deploy n8n on a managed Ubuntu server with Docker, PostgreSQL, and Caddy.
+  category: automation
+  icon: n8n
+  tags:
+    - n8n
+    - automation
+    - docker
+    - postgres
+    - managed-server
+
+spec:
+  provider:
+    default: aws
+    supported:
+      - aws
+
+  access:
+    mode: ELASTIC_IP_HTTP
+    publicProtocol: http
+    publicPort: 80
+    internalAppPort: 5678
+
+  defaults:
+    region: ap-south-1
+    plan: Starter
+    instanceType: t3.micro
+    volumeSizeGb: 20
+    timezone: Asia/Kolkata
+    n8nVersion: latest
+
+  variables:
+    - key: workspaceName
+      type: STRING
+      required: false
+      default: auto
+      userVisible: true
+      advanced: false
+      name: Workspace Name
+      description: Optional name for this n8n workspace.
+
+    - key: timezone
+      type: STRING
+      required: false
+      default: Asia/Kolkata
+      userVisible: true
+      advanced: true
+      name: Timezone
+      description: Timezone used by n8n workflows.
+
+    - key: n8nVersion
+      type: STRING
+      required: false
+      default: latest
+      userVisible: true
+      advanced: true
+      name: n8n Version
+      description: Docker image tag for n8n.
+
+  services:
+    - name: postgres
+      image: postgres:16
+      type: PREBUILT
+      internalPort: 5432
+      public: false
+      volumes:
+        - id: postgres_data
+          dir: /var/lib/postgresql/data
+      env:
+        POSTGRES_USER:
+          default: n8n
+          readonly: true
+        POSTGRES_DB:
+          default: n8n
+          readonly: true
+        POSTGRES_PASSWORD:
+          generated: true
+          secret: true
+          expose: false
+
+    - name: n8n
+      image: n8nio/n8n:${n8nVersion}
+      type: PREBUILT
+      internalPort: 5678
+      public: false
+      dependsOn:
+        - postgres
+      volumes:
+        - id: n8n_data
+          dir: /home/node/.n8n
+      env:
+        N8N_HOST:
+          default: ${ELASTIC_IP}
+          readonly: true
+        N8N_PORT:
+          default: "5678"
+          readonly: true
+        N8N_PROTOCOL:
+          default: http
+          readonly: true
+        WEBHOOK_URL:
+          default: http://${ELASTIC_IP}/
+          readonly: true
+        N8N_EDITOR_BASE_URL:
+          default: http://${ELASTIC_IP}/
+          readonly: true
+        N8N_SECURE_COOKIE:
+          default: "false"
+          readonly: true
+        GENERIC_TIMEZONE:
+          default: ${timezone}
+        DB_TYPE:
+          default: postgresdb
+          readonly: true
+        DB_POSTGRESDB_HOST:
+          default: postgres
+          readonly: true
+        DB_POSTGRESDB_PORT:
+          default: "5432"
+          readonly: true
+        DB_POSTGRESDB_DATABASE:
+          default: n8n
+          readonly: true
+        DB_POSTGRESDB_USER:
+          default: n8n
+          readonly: true
+        DB_POSTGRESDB_PASSWORD:
+          fromSecret: POSTGRES_PASSWORD
+          secret: true
+          expose: false
+        N8N_ENCRYPTION_KEY:
+          generated: true
+          secret: true
+          expose: false
+
+    - name: caddy
+      image: caddy:2
+      type: PREBUILT
+      public: true
+      publicPorts:
+        - 80
+      dependsOn:
+        - n8n
+      configs:
+        - path: /etc/caddy/Caddyfile
+          envsubst: true
+          template: |
+            :80 {
+              reverse_proxy n8n:5678
+            }
+
+  security:
+    publicPorts:
+      - 80
+    internalOnlyPorts:
+      - 5678
+      - 5432
+    provisioningPorts:
+      - 22
+    secrets:
+      - POSTGRES_PASSWORD
+      - N8N_ENCRYPTION_KEY
+
+  healthChecks:
+    - name: n8n-http
+      type: HTTP
+      url: http://${ELASTIC_IP}
+      expectedStatus:
+        - 200
+        - 301
+        - 302
+
+  instructions:
+    - type: TEXT
+      title: Open n8n
+      content: http://${ELASTIC_IP}
+
+    - type: TEXT
+      title: First login
+      content: On first visit, n8n will ask you to create the owner account.
+
+    - type: WARNING
+      title: MVP HTTP mode
+      content: This deployment uses HTTP over Elastic IP for MVP testing. Use a domain with HTTPS for production.
+
+  readme: |
+    # n8n Managed Server
+
+    This template deploys n8n with PostgreSQL and Caddy on a managed Ubuntu server.
+
+    The MVP access mode is Elastic IP over HTTP:
+
+    http://<ELASTIC_IP>
+
+    TisiOps creates the server, installs Docker, starts PostgreSQL, starts n8n,
+    configures Caddy, runs health checks, stores logs, and returns the final URL.

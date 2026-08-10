@@ -44,10 +44,13 @@ enum ChatRole {
 
 enum DeploymentType {
   VERCEL
+  N8N
 }
 
 enum DeploymentProvider {
   TISIOPS_MANAGED_VERCEL
+  /// EC2 in the TisiOps-owned AWS account. The user supplies no credentials.
+  TISIOPS_MANAGED_AWS
 }
 
 enum DeploymentStatus {
@@ -61,6 +64,81 @@ enum DeploymentStatus {
   ACCESS_BLOCKED
   /// No real deployment ran — the MVP recorded the approval only.
   PLACEHOLDER
+
+  // Managed-server states. A run moves down this list in order, and the
+  // progress screen turns the current one into the highlighted step.
+  DRAFT
+  PLANNING
+  PENDING
+  RUNNING
+  PROVISIONING_INFRA
+  BOOTSTRAPPING_SERVER
+  CONFIGURING_N8N
+  /// Custom domain chosen, but its A record does not point at the Elastic IP.
+  WAITING_FOR_DNS
+  CONFIGURING_SSL
+  HEALTH_CHECKING
+  /// Waiting in the Redis queue for a worker.
+  QUEUED
+  /// Handler is pushing the build or app out.
+  DEPLOYING
+
+  // Paused states. The server still exists and its disk and address are kept;
+  // only the compute is off, which is what stops most of the bill.
+  STOPPING
+  STOPPED
+  STARTING
+}
+
+enum JobStatus {
+  PENDING
+  /// Handed to Redis. The Postgres row is still the source of truth — this
+  /// only records that a worker has been notified.
+  QUEUED
+  RUNNING
+  SUCCESS
+  FAILED
+  CANCELLED
+}
+
+enum JobType {
+  N8N_MANAGED_SERVER_DEPLOYMENT
+  VERCEL_DEPLOYMENT
+  AWS_APP_DEPLOYMENT
+  RETRY_DEPLOYMENT
+  REPAIR_DEPLOYMENT
+  /// terraform destroy. Destructive and irreversible — the API requires a
+  /// typed confirmation before one of these rows is ever written.
+  TERRAFORM_DESTROY
+  /// Stop the EC2 instance, keeping its disk and Elastic IP.
+  SERVER_STOP
+  /// Start a stopped EC2 instance again.
+  SERVER_START
+  /// Delete the Vercel project behind a Vercel deployment.
+  VERCEL_DELETE
+}
+
+enum ServerStatus {
+  PROVISIONING
+  READY
+  FAILED
+  TERMINATED
+  STOPPING
+  STOPPED
+  STARTING
+}
+
+enum HostingMode {
+  TISIOPS_MANAGED
+}
+
+enum DomainMode {
+  /// <workspace>.tisiops.app — needs DNS automation that is not enabled yet.
+  TISIOPS_SUBDOMAIN
+  /// The user points their own A record at the Elastic IP.
+  CUSTOM
+  /// No domain: n8n answers on the Elastic IP over plain HTTP.
+  NONE
 }
 
 enum LogLevel {
@@ -76,6 +154,35 @@ enum EnvTarget {
   DEVELOPMENT
 }
 
+/// One row per user per day per model.
+///
+/// The source of truth for AI spend. Redis holds a per-minute counter for
+/// burst control, but it expires in two minutes and may be evicted — anything
+/// that decides whether a user has spent their day must be read from here.
+model AiUsageDaily {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// UTC calendar day, as yyyy-mm-dd. A string so the unique constraint is a
+  /// plain equality check rather than a range scan.
+  date   String
+  model  String
+
+  messageCount Int @default(0)
+  inputTokens  Int @default(0)
+  outputTokens Int @default(0)
+  totalTokens  Int @default(0)
+  /// Calls that reached the provider and failed. Counted so a broken key does
+  /// not look like quiet usage.
+  failedCount  Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, date, model])
+  @@index([date])
+}
+
 model User {
   id        String   @id @default(cuid())
   clerkId   String   @unique
@@ -89,6 +196,8 @@ model User {
   connections  CloudProviderConnection[]
   chatSessions AiChatSession[]
   deployments  Deployment[]
+  servers      Server[]
+  aiUsage      AiUsageDaily[]
 
   @@index([email])
 }
@@ -103,10 +212,13 @@ model Deployment {
   provider DeploymentProvider @default(TISIOPS_MANAGED_VERCEL)
 
   appName         String
-  repositoryName  String
-  repositoryOwner String
+  /// Empty for deployments that have no repository, such as a managed n8n
+  /// server. Defaulted rather than nullable so the Vercel paths, which always
+  /// set all three, keep reading plain strings.
+  repositoryName  String             @default("")
+  repositoryOwner String             @default("")
   repositoryUrl   String?
-  branch          String
+  branch          String             @default("")
   framework       String?
   /// Folder inside the repository, e.g. "frontend" in a monorepo.
   /// Root Directory sent to Vercel, e.g. "frontend" in a monorepo.
@@ -117,7 +229,13 @@ model Deployment {
   outputDirectory String?
 
   status     DeploymentStatus @default(PREPARING)
+  /// The public project alias, e.g. https://tisiops-notesapp.vercel.app — this
+  /// is the only URL shown to the user.
   previewUrl String?
+  /// The unique per-build URL Vercel returns, e.g.
+  /// https://tisiops-notesapp-qi49925vt-tisi-ops.vercel.app. Kept for logs and
+  /// debugging: Deployment Protection usually makes it unopenable.
+  vercelDeploymentUrl String?
 
   vercelProjectId    String?
   vercelDeploymentId String?
@@ -133,11 +251,134 @@ model Deployment {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// The address the user opens. Vercel deployments keep using previewUrl;
+  /// managed-server deployments set this once a health check passes.
+  publicUrl String?
+  domain    String?
+
+  /// Which fixed Terraform module ran, e.g. "aws-n8n-server". Recorded so a
+  /// deployment can be traced to the exact module, and so a retry cannot land
+  /// on a different one.
+  template String?
+  /// `terraform output -json`, flattened. Infrastructure ids and addresses
+  /// only — no credentials, because the module emits none.
+  terraformOutputs Json?
+  /// Short, safe summary of the last `terraform plan`. Never the full output,
+  /// which can name variables.
+  planSummary String?
+  /// When the user accepted the cost warning for this deployment. Null means
+  /// no approval was recorded, which blocks a job from being queued.
+  costApprovedAt DateTime?
+  /// When the user typed the destroy confirmation. Recorded so a destroy can
+  /// be traced to an explicit decision.
+  destroyApprovedAt DateTime?
+
+  /// Provisioning key pair for this deployment's server. Generated per
+  /// deployment so one leaked key never reaches another user's machine. The
+  /// private half is encrypted at rest with the same key as env values and is
+  /// never returned by any API, rendered, or logged.
+  sshPublicKey           String?
+  encryptedSshPrivateKey String?
+
   logs                 DeploymentLog[]
   environmentVariables DeploymentEnvVar[]
   attempts             DeploymentAttempt[]
+  jobs                 DeploymentJob[]
+  servers              Server[]
+  n8nConfig            N8nDeploymentConfig?
 
   @@index([userId, createdAt])
+}
+
+/// Work the API refuses to do inside a request: Terraform runs for minutes and
+/// would outlive any HTTP timeout. The API writes the row, hands Redis nothing
+/// but this row's id, and returns. `npm run worker` runs it.
+///
+/// This table is the source of truth. Redis only carries the notification, so
+/// losing the queue loses nothing that cannot be re-enqueued from here.
+model DeploymentJob {
+  id           String     @id @default(cuid())
+  deploymentId String
+  deployment   Deployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  type         JobType    @default(N8N_MANAGED_SERVER_DEPLOYMENT)
+  status       JobStatus  @default(PENDING)
+  attempts     Int        @default(0)
+  /// Validated deployment config. Never holds secrets: n8n's encryption key and
+  /// database password are generated in the worker and stored encrypted on
+  /// N8nDeploymentConfig instead.
+  payloadJson  Json
+  errorMessage String?
+
+  /// Claim marker. A worker sets both in the same statement that flips the row
+  /// to RUNNING, so two workers cannot take the same job.
+  lockedAt   DateTime?
+  lockedBy   String?
+  startedAt  DateTime?
+  finishedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  logs DeploymentLog[]
+
+  @@index([status, createdAt])
+  @@index([deploymentId])
+}
+
+/// A machine TisiOps created in its own AWS account, as reported by Terraform.
+model Server {
+  id           String     @id @default(cuid())
+  userId       String
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deploymentId String
+  deployment   Deployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+
+  provider     DeploymentProvider @default(TISIOPS_MANAGED_AWS)
+  region       String
+  instanceType String
+
+  awsInstanceId      String?
+  awsSecurityGroupId String?
+  elasticIp          String?
+  publicIp           String?
+  sshUsername        String?
+
+  status ServerStatus @default(PROVISIONING)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([deploymentId])
+}
+
+/// What the user asked for, plus the secrets the worker generated for them.
+/// The two secret columns are encrypted with the same key as env-var values
+/// and are never returned by any API, rendered, or logged.
+model N8nDeploymentConfig {
+  id           String     @id @default(cuid())
+  deploymentId String     @unique
+  deployment   Deployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+
+  workspaceName String
+  adminEmail    String
+  timezone      String      @default("Asia/Kolkata")
+  region        String      @default("ap-south-1")
+  plan          String      @default("STARTER")
+  instanceType  String      @default("t3.micro")
+  domainMode    DomainMode  @default(NONE)
+  domain        String?
+  webhookUrl    String?
+  databaseType  String      @default("postgresdb")
+  hostingMode   HostingMode @default(TISIOPS_MANAGED)
+
+  /// Encrypted at rest. Regenerating either one would lock the user out of
+  /// their own credentials, so a retry reuses whatever is already here.
+  encryptedEncryptionKey String?
+  encryptedDbPassword    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 /// One deploy or retry run. The Deployment is the logical app; each attempt
@@ -166,6 +407,9 @@ model DeploymentLog {
   /// Which run produced this line, so a retry timeline can be grouped.
   attemptId    String?
   attempt      DeploymentAttempt? @relation(fields: [attemptId], references: [id], onDelete: SetNull)
+  /// Set instead of attemptId for worker-driven runs.
+  jobId        String?
+  job          DeploymentJob?     @relation(fields: [jobId], references: [id], onDelete: SetNull)
   level        LogLevel   @default(INFO)
   message      String
   createdAt    DateTime   @default(now())

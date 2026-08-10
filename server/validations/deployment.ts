@@ -55,3 +55,32 @@ export const approveDeploymentSchema = z.object({
 
 export type AnalyzeRepositoryInput = z.infer<typeof analyzeRepositorySchema>
 export type ApproveDeploymentInput = z.infer<typeof approveDeploymentSchema>
+
+/**
+ * Managed n8n request. Values are checked again by validateN8nConfig on the
+ * server before anything reaches Terraform — this only shapes the request.
+ */
+export const n8nDeploymentSchema = z.object({
+  workspaceName: z.string().trim().min(3, "Workspace name is required").max(60),
+  adminEmail: z.email("Enter a valid admin email"),
+  timezone: z.string().trim().min(3).max(60).default("Asia/Kolkata"),
+  region: z.string().trim().min(3).max(30).default("ap-south-1"),
+  plan: z.enum(["STARTER", "GROWTH", "PRO"]).default("STARTER"),
+  domainMode: z.enum(["TISIOPS_SUBDOMAIN", "CUSTOM", "NONE"]).default("NONE"),
+  domain: z.string().trim().max(253).nullable().default(null),
+})
+
+/**
+ * Terraform Agent plan request. The template name is checked against the
+ * registry by the validator — this only shapes the request body.
+ */
+export const terraformPlanSchema = z.object({
+  deploymentId: z.string().trim().min(1, "Deployment is required"),
+  template: z.string().trim().min(1, "Template is required").max(60),
+  projectName: z.string().trim().min(3, "Project name is required").max(60),
+  region: z.string().trim().min(3).max(30),
+  instanceType: z.string().trim().min(2).max(30),
+  volumeSize: z.number().int().nullable().default(null),
+  allowedSshCidr: z.string().trim().max(43).nullable().default(null),
+  environment: z.enum(["preview", "staging", "production"]).default("preview"),
+})

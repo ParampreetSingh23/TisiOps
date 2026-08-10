@@ -5,8 +5,11 @@ import { useEffect, useRef, useState } from "react"
 
 import { GithubCards } from "@/components/dashboard/github-cards"
 import { Markdown } from "@/components/dashboard/markdown"
+import { N8nFlow } from "@/components/deployment/n8n-flow"
 import { VercelFlow } from "@/components/deployment/vercel-flow"
+import { UsageMeter } from "@/components/dashboard/ai-usage-meter"
 import { apiFetch } from "@/lib/api"
+import type { UsageSummary } from "@tisiops/server/services/ai/usage"
 import type { GithubAgentResponse } from "@tisiops/server/services/github/agent"
 
 /** The console always gets structured data back, not just text. */
@@ -14,6 +17,12 @@ type ChatResponse =
   | { type: "answer"; intent: string; message: string }
   | {
       type: "vercel_deployment_flow"
+      intent: string
+      message: string
+      nextStep: string
+    }
+  | {
+      type: "n8n_deployment_flow"
       intent: string
       message: string
       nextStep: string
@@ -29,6 +38,8 @@ type Message = {
   role: "user" | "assistant"
   content: string
   opensVercelFlow?: boolean
+  /** Marks the turn that proposes a managed n8n server, same as above. */
+  opensN8nFlow?: boolean
   /** github_agent findings for this turn. Live only — never persisted. */
   github?: GithubAgentResponse
   /** The question that produced `github`, so a card can ask a follow-up. */
@@ -49,6 +60,7 @@ type SessionDetail = SessionSummary & { messages: Message[] }
 const LEGACY_STORAGE_KEY = "tisiops.conversations"
 
 const suggestions = [
+  "Spin a new server using the n8n template",
   "I have a repo in GitHub. Deploy it on Vercel.",
   "Show me why production is failing",
   "Restart my production service",
@@ -66,6 +78,7 @@ export function AiConsole({ firstName }: { firstName: string | null }) {
   const [messages, setMessages] = useState<Message[]>([])
   const [prompt, setPrompt] = useState("")
   const [isSending, setIsSending] = useState(false)
+  const [usage, setUsage] = useState<UsageSummary | null>(null)
   const [isLoadingChat, setIsLoadingChat] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const endRef = useRef<HTMLDivElement>(null)
@@ -138,6 +151,17 @@ export function AiConsole({ firstName }: { firstName: string | null }) {
     }
   }
 
+  /** Read after every turn so the meter reflects what was just spent. */
+  const refreshUsage = () =>
+    apiFetch<UsageSummary>("/api/ai/usage")
+      .then(setUsage)
+      // A failed read must not break the console; the server enforces anyway.
+      .catch(() => {})
+
+  useEffect(() => {
+    void refreshUsage()
+  }, [])
+
   async function send(text: string) {
     const content = text.trim()
     if (!content || isSending) return
@@ -175,6 +199,9 @@ export function AiConsole({ firstName }: { firstName: string | null }) {
           ...(response.type === "vercel_deployment_flow"
             ? { opensVercelFlow: true }
             : {}),
+          ...(response.type === "n8n_deployment_flow"
+            ? { opensN8nFlow: true }
+            : {}),
           ...(response.type.startsWith("github_") || response.type === "error"
             ? { github: response as GithubAgentResponse, question: content }
             : {}),
@@ -184,6 +211,7 @@ export function AiConsole({ firstName }: { firstName: string | null }) {
       setError(caught instanceof Error ? caught.message : "Request failed")
     } finally {
       setIsSending(false)
+      void refreshUsage()
     }
   }
 
@@ -291,6 +319,7 @@ export function AiConsole({ firstName }: { firstName: string | null }) {
                       <div className="min-w-0 flex-1">
                         <Markdown>{message.content}</Markdown>
                         {message.opensVercelFlow ? <VercelFlow /> : null}
+                        {message.opensN8nFlow ? <N8nFlow /> : null}
                         {message.github ? (
                           <GithubCards
                             response={message.github}
@@ -356,11 +385,17 @@ export function AiConsole({ firstName }: { firstName: string | null }) {
 
             <div className="flex items-center gap-3 border-t border-line px-3 py-2.5">
               <span className="text-sm text-ink-muted">TisiOps Planner</span>
+              <UsageMeter usage={usage} />
               <button
                 type="submit"
-                disabled={isSending || prompt.trim().length === 0}
+                disabled={
+                  isSending ||
+                  prompt.trim().length === 0 ||
+                  usage?.canSend === false ||
+                  (usage ? prompt.trim().length > usage.maxInputChars : false)
+                }
                 aria-label="Send"
-                className="ml-auto inline-flex size-9 items-center justify-center rounded-[6px] bg-brand text-white transition-colors duration-150 ease-out hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-40"
+                className="inline-flex size-9 items-center justify-center rounded-[6px] bg-brand text-white transition-colors duration-150 ease-out hover:bg-brand-hover disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <ArrowUp className="size-4" aria-hidden />
               </button>
@@ -368,8 +403,8 @@ export function AiConsole({ firstName }: { firstName: string | null }) {
           </form>
 
           <p className="mt-2.5 shrink-0 pb-1 text-center text-xs text-ink-muted">
-            TisiOps can make mistakes and cannot run deployments yet. Check
-            anything important.
+            TisiOps can make mistakes, and never deploys anything before you
+            approve it. Check anything important.
           </p>
         </div>
       </div>

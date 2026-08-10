@@ -5,6 +5,8 @@ import {
   SiGooglecloudHex,
   SiHetzner,
   SiHetznerHex,
+  SiN8n,
+  SiN8nHex,
   SiVercel,
 } from "@icons-pack/react-simple-icons"
 import { Server } from "lucide-react"
@@ -140,6 +142,12 @@ export function ProviderIcon({
       return (
         <span className={slot}>
           <SiVercel className="size-4 text-ink-strong" />
+        </span>
+      )
+    case "n8n":
+      return (
+        <span className={slot}>
+          <SiN8n className="size-5" color={SiN8nHex ?? "#FF6D5A"} />
         </span>
       )
     case "custom-vps":

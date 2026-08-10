@@ -11,7 +11,10 @@ const API_URL = (
  * production, so the Clerk session cookie never reaches the API — the session
  * token goes in the Authorization header instead.
  */
-export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+export async function apiFetch<T>(
+  path: string,
+  init?: RequestInit
+): Promise<T> {
   const token = await getToken()
 
   const response = await fetch(`${API_URL}${path}`, {

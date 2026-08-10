@@ -3,6 +3,8 @@
 import * as React from "react"
 import { ThemeProvider as NextThemesProvider, useTheme } from "next-themes"
 
+import { switchTheme } from "@/lib/theme"
+
 function ThemeProvider({
   children,
   ...props
@@ -12,7 +14,9 @@ function ThemeProvider({
       attribute="class"
       defaultTheme="system"
       enableSystem
-      disableTransitionOnChange
+      // Deliberately not disableTransitionOnChange: that injects a
+      // `transition: none` style for the duration of the switch, which is
+      // exactly what the cross-fade in globals.css needs to happen.
       {...props}
     >
       <ThemeHotkey />
@@ -47,7 +51,9 @@ function ThemeHotkey() {
         return
       }
 
-      if (event.key.toLowerCase() !== "d") {
+      // `key` is typed as a string but arrives undefined on synthetic keydowns
+      // — browser autofill is the common one — so this cannot be dereferenced.
+      if (event.key?.toLowerCase() !== "d") {
         return
       }
 
@@ -55,7 +61,7 @@ function ThemeHotkey() {
         return
       }
 
-      setTheme(resolvedTheme === "dark" ? "light" : "dark")
+      switchTheme(setTheme, resolvedTheme === "dark" ? "light" : "dark")
     }
 
     window.addEventListener("keydown", onKeyDown)

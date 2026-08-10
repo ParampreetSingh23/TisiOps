@@ -23,6 +23,13 @@ import type { SafeDeployment } from "@tisiops/server/services/deployments"
 
 export const STATUS_STYLES: Record<string, string> = {
   LIVE: "border-[#cfe6dc] bg-[#f2f9f6] text-[#0f6b4f]",
+  QUEUED: "border-brand bg-brand-soft text-brand",
+  RUNNING: "border-brand bg-brand-soft text-brand",
+  PROVISIONING_INFRA: "border-brand bg-brand-soft text-brand",
+  BOOTSTRAPPING_SERVER: "border-brand bg-brand-soft text-brand",
+  CONFIGURING_N8N: "border-brand bg-brand-soft text-brand",
+  HEALTH_CHECKING: "border-brand bg-brand-soft text-brand",
+  DEPLOYING: "border-brand bg-brand-soft text-brand",
   BUILDING: "border-brand bg-brand-soft text-brand",
   RETRYING: "border-brand bg-brand-soft text-brand",
   CANCELLED: "border-line-warm bg-canvas text-ink-muted",
@@ -34,6 +41,13 @@ export const STATUS_STYLES: Record<string, string> = {
 
 const STATUS_DOTS: Record<string, string> = {
   LIVE: "bg-[#0f6b4f]",
+  QUEUED: "bg-brand",
+  RUNNING: "bg-brand",
+  PROVISIONING_INFRA: "bg-brand",
+  BOOTSTRAPPING_SERVER: "bg-brand",
+  CONFIGURING_N8N: "bg-brand",
+  HEALTH_CHECKING: "bg-brand",
+  DEPLOYING: "bg-brand",
   BUILDING: "bg-brand",
   RETRYING: "bg-brand",
   PREPARING: "bg-line-warm",
@@ -44,14 +58,27 @@ const STATUS_DOTS: Record<string, string> = {
 }
 
 export function statusLabel(status: string): string {
-  return status === "ACCESS_BLOCKED"
-    ? "Access blocked"
-    : status.charAt(0) + status.slice(1).toLowerCase()
+  if (status === "ACCESS_BLOCKED") return "Access blocked"
+  return status
+    .toLowerCase()
+    .split("_")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ")
 }
 
 /** Quieter than a pill, which turned every row into a warning. */
 export function StatusDot({ status }: { status: string }) {
-  const running = status === "BUILDING" || status === "RETRYING"
+  const running = [
+    "QUEUED",
+    "RUNNING",
+    "PROVISIONING_INFRA",
+    "BOOTSTRAPPING_SERVER",
+    "CONFIGURING_N8N",
+    "HEALTH_CHECKING",
+    "DEPLOYING",
+    "BUILDING",
+    "RETRYING",
+  ].includes(status)
 
   return (
     <span className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-default">
@@ -174,15 +201,21 @@ export function DeploymentsList() {
                 </div>
 
                 <p className="mt-1 truncate font-mono text-xs text-ink-muted">
-                  {deployment.repositoryOwner}/{deployment.repositoryName}
-                  <span className="mx-1.5 text-line-warm">/</span>
-                  {deployment.branch}
-                  {deployment.servicePath ? (
+                  {deployment.type === "N8N" || !deployment.repositoryOwner ? (
+                    "n8n Managed Server · AWS ap-south-1"
+                  ) : (
                     <>
+                      {deployment.repositoryOwner}/{deployment.repositoryName}
                       <span className="mx-1.5 text-line-warm">/</span>
-                      {deployment.servicePath}
+                      {deployment.branch}
+                      {deployment.servicePath ? (
+                        <>
+                          <span className="mx-1.5 text-line-warm">/</span>
+                          {deployment.servicePath}
+                        </>
+                      ) : null}
                     </>
-                  ) : null}
+                  )}
                 </p>
 
                 {deployment.previewUrl ? (

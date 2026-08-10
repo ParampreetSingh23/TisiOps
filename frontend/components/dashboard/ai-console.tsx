@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react"
 import { GithubCards } from "@/components/dashboard/github-cards"
 import { Markdown } from "@/components/dashboard/markdown"
 import { N8nFlow } from "@/components/deployment/n8n-flow"
+import { PostgresFlow } from "@/components/deployment/postgres-flow"
 import { VercelFlow } from "@/components/deployment/vercel-flow"
 import { UsageMeter } from "@/components/dashboard/ai-usage-meter"
 import { apiFetch } from "@/lib/api"
@@ -27,6 +28,12 @@ type ChatResponse =
       message: string
       nextStep: string
     }
+  | {
+      type: "postgres_deployment_flow"
+      intent: string
+      message: string
+      nextStep: string
+    }
   | GithubAgentResponse
 
 /**
@@ -40,6 +47,7 @@ type Message = {
   opensVercelFlow?: boolean
   /** Marks the turn that proposes a managed n8n server, same as above. */
   opensN8nFlow?: boolean
+  opensPostgresFlow?: boolean
   /** github_agent findings for this turn. Live only — never persisted. */
   github?: GithubAgentResponse
   /** The question that produced `github`, so a card can ask a follow-up. */
@@ -61,6 +69,7 @@ const LEGACY_STORAGE_KEY = "tisiops.conversations"
 
 const suggestions = [
   "Spin a new server using the n8n template",
+  "Create a postgres database for me",
   "I have a repo in GitHub. Deploy it on Vercel.",
   "Show me why production is failing",
   "Restart my production service",
@@ -202,6 +211,9 @@ export function AiConsole({ firstName }: { firstName: string | null }) {
           ...(response.type === "n8n_deployment_flow"
             ? { opensN8nFlow: true }
             : {}),
+          ...(response.type === "postgres_deployment_flow"
+            ? { opensPostgresFlow: true }
+            : {}),
           ...(response.type.startsWith("github_") || response.type === "error"
             ? { github: response as GithubAgentResponse, question: content }
             : {}),
@@ -320,6 +332,7 @@ export function AiConsole({ firstName }: { firstName: string | null }) {
                         <Markdown>{message.content}</Markdown>
                         {message.opensVercelFlow ? <VercelFlow /> : null}
                         {message.opensN8nFlow ? <N8nFlow /> : null}
+                        {message.opensPostgresFlow ? <PostgresFlow /> : null}
                         {message.github ? (
                           <GithubCards
                             response={message.github}

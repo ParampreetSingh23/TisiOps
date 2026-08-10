@@ -27,6 +27,14 @@ import {
   toSafeConnection,
 } from "./services/provider-connections/index"
 import {
+  checkServerHealth,
+  createBYOSServer,
+  disconnectServer,
+  getUserServerById,
+  listUserServers,
+} from "./services/servers/server.service"
+import { testSshConnection } from "./services/servers/ssh-diagnostic"
+import {
   getAttempts,
   getDeployment,
   getDeploymentLogs,
@@ -76,6 +84,7 @@ import {
   analyzeRepositorySchema,
   approveDeploymentSchema,
   n8nDeploymentSchema,
+  postgresDeploymentSchema,
   terraformPlanSchema,
 } from "./validations/deployment"
 import { isAdminEmail } from "./constants/index"
@@ -98,6 +107,21 @@ import {
   quickStartConfig,
   quickStartPlan,
 } from "./services/n8n/console"
+import {
+  APPROVE_LABEL as POSTGRES_APPROVE_LABEL,
+  QUICK_START_MESSAGE as POSTGRES_QUICK_START_MESSAGE,
+  QUICK_START_NEXT_STEP as POSTGRES_QUICK_START_NEXT_STEP,
+  QUICK_START_WARNING as POSTGRES_QUICK_START_WARNING,
+  postgresTemplateSummary,
+  quickStartConfig as postgresQuickStartConfig,
+  quickStartPlan as postgresQuickStartPlan,
+} from "./services/postgres/console"
+import {
+  countActivePostgres,
+  createManagedPostgresDeployment,
+  getPostgresConnection,
+  retryManagedPostgresDeployment,
+} from "./services/postgres/index"
 import { getTemplateById } from "./services/templates/template-registry"
 import {
   ALLOWED_REGIONS,
@@ -233,6 +257,82 @@ app.get("/api/me", async (req, res) => {
       role: user.role,
     },
   })
+})
+
+/**
+ * Server routes for BYOS and managed server management.
+ */
+app.get("/api/servers", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const servers = await listUserServers(user.id)
+  res.json({ success: true, data: servers })
+})
+
+app.get("/api/servers/:id", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const server = await getUserServerById(user.id, String(req.params.id))
+  if (!server) {
+    res.status(404).json({ success: false, error: "Server not found" })
+    return
+  }
+
+  res.json({ success: true, data: server })
+})
+
+app.post("/api/servers/test-connection", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const result = await testSshConnection(req.body)
+  if (!result.ok) {
+    res.status(400).json({ success: false, error: result.error })
+    return
+  }
+
+  res.json({ success: true, data: result.details })
+})
+
+app.post("/api/servers", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  try {
+    const server = await createBYOSServer(user.id, req.body)
+    res.json({ success: true, data: server })
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "Failed to connect server"
+    res.status(400).json({ success: false, error: msg })
+  }
+})
+
+app.post("/api/servers/:id/check", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const updated = await checkServerHealth(user.id, String(req.params.id))
+  if (!updated) {
+    res.status(404).json({ success: false, error: "Server not found" })
+    return
+  }
+
+  res.json({ success: true, data: updated })
+})
+
+app.delete("/api/servers/:id", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const success = await disconnectServer(user.id, String(req.params.id))
+  if (!success) {
+    res.status(404).json({ success: false, error: "Server not found" })
+    return
+  }
+
+  res.json({ success: true, data: { status: "disconnected" } })
 })
 
 /**
@@ -407,6 +507,10 @@ app.get("/api/chat/sessions/:id", async (req, res) => {
       return { ...message, opensN8nFlow: true }
     }
 
+    if (intent === "postgres_managed_server_deployment") {
+      return { ...message, opensPostgresFlow: true }
+    }
+
     return message
   })
 
@@ -462,6 +566,50 @@ app.post("/api/chat/sessions/:id/messages", async (req, res) => {
     const hasN8nProposal = history.some((msg) =>
       /n8n|aws-n8n-server|n8n_deployment_flow/i.test(msg.content)
     )
+    const hasPostgresProposal = history.some((msg) =>
+      /postgres|postgresql|postgres-managed-server/i.test(msg.content)
+    )
+
+    if (hasPostgresProposal) {
+      const config = postgresQuickStartConfig({
+        email: user.email,
+        name: user.name,
+      })
+      const result = await createManagedPostgresDeployment({
+        userId: user.id,
+        config,
+      })
+
+      const replyMessage = result.ok
+        ? `Approved. I’ve queued the PostgreSQL deployment.\n\nStatus:\nQUEUED\n\nTrack details:\n/dashboard/deployments/${result.deploymentId}\n\nCurrent step:\nWaiting for worker\n\nYou will receive the masked DATABASE_URL once provisioning completes.`
+        : `Could not queue PostgreSQL deployment: ${result.error}`
+
+      await appendTurn({
+        userId: user.id,
+        sessionId,
+        userContent: content,
+        assistantContent: replyMessage,
+      })
+
+      res.json({
+        success: true,
+        data: result.ok
+          ? {
+              type: "postgres_deployment_flow",
+              intent: "postgres_managed_server_deployment",
+              message: replyMessage,
+              nextStep: "Track deployment progress",
+              deploymentId: result.deploymentId,
+              opensPostgresFlow: true,
+            }
+          : {
+              type: "answer",
+              intent: "postgres_managed_server_deployment",
+              message: replyMessage,
+            },
+      })
+      return
+    }
 
     if (hasN8nProposal) {
       const n8nConfig = quickStartConfig({ email: user.email, name: user.name })
@@ -555,6 +703,20 @@ app.post("/api/chat/sessions/:id/messages", async (req, res) => {
                 message:
                   "Managed n8n deployments are not enabled on this TisiOps instance yet.",
               }
+        : intent === "postgres_managed_server_deployment"
+          ? {
+              type: "postgres_deployment_flow" as const,
+              intent,
+              message: POSTGRES_QUICK_START_MESSAGE,
+              nextStep: POSTGRES_QUICK_START_NEXT_STEP,
+            }
+        : intent === "server_connection"
+          ? {
+              type: "answer" as const,
+              intent,
+              message:
+                "I can help you connect your own server (BYOS). Open the Connect Server wizard to add your server IP and SSH details securely:\n\n[Open Connect Server](/dashboard/servers?connect=true)",
+            }
         : // Terraform questions are answered from the deployment's own records
           // — template, outputs, state, job history — because a plausible but
           // wrong claim about someone's infrastructure is worse than none.
@@ -1011,6 +1173,77 @@ app.post("/api/deployments/:id/n8n/retry", async (req, res) => {
   if (!user) return
 
   const result = await retryManagedN8nDeployment({
+    userId: user.id,
+    deploymentId: req.params.id,
+  })
+
+  if (!result.ok) {
+    res.status(422).json({ success: false, error: result.error })
+    return
+  }
+
+  res.json({ success: true, data: { id: result.deploymentId } })
+})
+
+app.get("/api/deployments/postgres/quick-start", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  res.json({
+    success: true,
+    data: {
+      config: postgresQuickStartConfig({ email: user.email, name: user.name }),
+      plan: postgresQuickStartPlan(),
+      template: postgresTemplateSummary(),
+      warning: POSTGRES_QUICK_START_WARNING,
+      approveLabel: POSTGRES_APPROVE_LABEL,
+      activeDeployments: await countActivePostgres(user.id),
+    },
+  })
+})
+
+app.post("/api/deployments/postgres/deploy", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const parsed = postgresDeploymentSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(422).json({ success: false, error: firstIssue(parsed.error) })
+    return
+  }
+
+  const result = await createManagedPostgresDeployment({
+    userId: user.id,
+    config: parsed.data,
+  })
+
+  if (!result.ok) {
+    res.status(422).json({ success: false, error: result.error })
+    return
+  }
+
+  res.status(201).json({ success: true, data: { id: result.deploymentId } })
+})
+
+app.get("/api/deployments/:id/postgres/connection", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const reveal = req.query.reveal === "true"
+  const connection = await getPostgresConnection(user.id, req.params.id, reveal)
+  if (!connection) {
+    res.status(404).json({ success: false, error: "Deployment not found" })
+    return
+  }
+
+  res.json({ success: true, data: connection })
+})
+
+app.post("/api/deployments/:id/postgres/retry", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const result = await retryManagedPostgresDeployment({
     userId: user.id,
     deploymentId: req.params.id,
   })

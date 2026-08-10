@@ -13,9 +13,14 @@ const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined
 }
 
+const cachedPrisma = globalForPrisma.prisma
+const needsFreshPrisma =
+  cachedPrisma && typeof (cachedPrisma as { adminTemplate?: unknown }).adminTemplate === "undefined"
+
 export const prisma =
-  globalForPrisma.prisma ??
-  new PrismaClient({ adapter: new PrismaPg({ connectionString }) })
+  !cachedPrisma || needsFreshPrisma
+    ? new PrismaClient({ adapter: new PrismaPg({ connectionString }) })
+    : cachedPrisma
 
 if (process.env.NODE_ENV !== "production") {
   globalForPrisma.prisma = prisma

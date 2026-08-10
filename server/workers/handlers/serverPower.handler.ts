@@ -27,7 +27,7 @@ async function serverFor(deploymentId: string) {
 export const serverStopHandler: Handler = async ({ deploymentId, log }) => {
   const server = await serverFor(deploymentId)
 
-  if (!server?.awsInstanceId) {
+  if (!server?.awsInstanceId || !server.region) {
     return { ok: false, error: "This deployment has no server to stop." }
   }
 
@@ -87,7 +87,7 @@ export const serverStopHandler: Handler = async ({ deploymentId, log }) => {
 export const serverStartHandler: Handler = async ({ deploymentId, log }) => {
   const server = await serverFor(deploymentId)
 
-  if (!server?.awsInstanceId) {
+  if (!server?.awsInstanceId || !server.region) {
     return { ok: false, error: "This deployment has no server to start." }
   }
 

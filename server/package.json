@@ -29,6 +29,7 @@
     "./services/n8n/plans": "./services/n8n/plans.ts",
     "./services/n8n/planner": "./services/n8n/planner.ts",
     "./services/n8n/console": "./services/n8n/console.ts",
+    "./services/postgres/console": "./services/postgres/console.ts",
     "./services/deployment-job": "./services/deployment-job.service.ts",
     "./services/terraform/registry": "./services/terraform/terraformTemplateRegistry.ts",
     "./services/terraform/agent": "./services/terraform/terraformAgentPlans.ts",
@@ -37,7 +38,8 @@
     "./services/ai/limits": "./services/ai/limits.ts",
     "./services/deployments/lifecycle": "./services/deployments/lifecycle.service.ts",
     "./services/deployments/overview": "./services/deployments/overview.service.ts",
-    "./services/templates": "./services/templates/template-registry.ts"
+    "./services/templates": "./services/templates/template-registry.ts",
+    "./services/templates/admin": "./services/templates/admin-templates.ts"
   },
   "scripts": {
     "dev": "tsx watch --env-file=.env index.ts",
@@ -52,13 +54,15 @@
     "check:urls": "tsx services/vercel/url.check.ts",
     "typecheck": "tsc --noEmit",
     "check:n8n": "tsx services/n8n/n8n.check.ts",
+    "check:postgres": "tsx services/postgres/postgres.check.ts",
     "check:queue": "tsx queues/queue.check.ts",
     "check:registry": "tsx services/terraform/registry.check.ts",
     "check:agent": "tsx services/terraform/agent.check.ts",
     "check:limits": "tsx services/ai/limits.check.ts",
     "check:lifecycle": "tsx services/deployments/lifecycle.check.ts",
     "check:intent": "tsx services/github/intent.check.ts",
-    "check:templates": "tsx services/templates/templates.check.ts"
+    "check:templates": "tsx services/templates/templates.check.ts",
+    "check:admin-templates": "tsx services/templates/admin-templates.check.ts"
   },
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.1106.0",

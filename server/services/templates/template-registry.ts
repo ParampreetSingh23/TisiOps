@@ -37,8 +37,11 @@ export type * from "./templates.types"
  * incorrectly.
  */
 
-/** Every manifest TisiOps ships, by file. n8n only for now. */
-const MANIFEST_FILES = ["n8n/aws-n8n-server.yaml"]
+/** Every manifest TisiOps ships, by file. */
+const MANIFEST_FILES = [
+  "n8n/aws-n8n-server.yaml",
+  "postgres/postgres-managed-server.yaml",
+]
 
 const REGISTRY: Map<string, TemplateManifest> = new Map(
   MANIFEST_FILES.map((file) => {
@@ -67,6 +70,29 @@ export function getTemplateById(id: string): TemplateManifest {
 
 export function listTemplates(): TemplateManifest[] {
   return [...REGISTRY.values()]
+}
+
+export async function listTemplatesWithDb(): Promise<TemplateManifest[]> {
+  const { listPublishedDbTemplates } = await import("./admin-templates")
+  const dbTemplates = await listPublishedDbTemplates()
+  const byId = new Map(REGISTRY)
+
+  for (const manifest of dbTemplates) {
+    byId.set(manifest.metadata.id, manifest)
+  }
+
+  return [...byId.values()]
+}
+
+export async function getTemplateByIdWithDb(
+  id: string
+): Promise<TemplateManifest> {
+  const manifest = (await listTemplatesWithDb()).find(
+    (template) => template.metadata.id === id
+  )
+  if (!manifest) throw new UnknownTemplateError(id)
+
+  return manifest
 }
 
 /** The list-view shape: metadata plus the few spec facts a card shows. */

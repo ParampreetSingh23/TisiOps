@@ -7,6 +7,8 @@ import {
   SiHetznerHex,
   SiN8n,
   SiN8nHex,
+  SiPostgresql,
+  SiPostgresqlHex,
   SiVercel,
 } from "@icons-pack/react-simple-icons"
 import { Server } from "lucide-react"
@@ -148,6 +150,12 @@ export function ProviderIcon({
       return (
         <span className={slot}>
           <SiN8n className="size-5" color={SiN8nHex ?? "#FF6D5A"} />
+        </span>
+      )
+    case "postgres":
+      return (
+        <span className={slot}>
+          <SiPostgresql className="size-5" color={SiPostgresqlHex} />
         </span>
       )
     case "custom-vps":

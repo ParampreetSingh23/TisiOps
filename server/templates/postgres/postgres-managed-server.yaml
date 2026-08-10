@@ -1,0 +1,150 @@
+apiVersion: tisiops.com/v1
+kind: Template
+
+metadata:
+  id: postgres-managed-server
+  name: PostgreSQL Managed Server
+  description: Deploy PostgreSQL on a managed Ubuntu server using Docker with generated credentials and persistent storage.
+  category: database
+  icon: postgresql
+  tags:
+    - postgres
+    - postgresql
+    - database
+    - sql
+    - docker
+    - managed-server
+
+spec:
+  provider:
+    default: aws
+    supported:
+      - aws
+
+  access:
+    mode: PUBLIC_PASSWORD_MVP
+    publicProtocol: tcp
+    publicPort: 5432
+    internalAppPort: 5432
+
+  defaults:
+    region: ap-south-1
+    plan: Starter
+    instanceType: t3.micro
+    volumeSizeGb: 20
+    postgresVersion: "16-alpine"
+    databaseName: appdb
+    databaseUser: tisiops_user
+    persistence: true
+
+  variables:
+    - key: workspaceName
+      type: STRING
+      required: false
+      default: auto
+      userVisible: true
+      advanced: false
+      name: Workspace Name
+      description: Optional name for this PostgreSQL deployment.
+
+    - key: databaseName
+      type: STRING
+      required: false
+      default: appdb
+      userVisible: true
+      advanced: false
+      name: Database Name
+      description: Name of the default PostgreSQL database.
+
+    - key: databaseUser
+      type: STRING
+      required: false
+      default: tisiops_user
+      userVisible: true
+      advanced: true
+      name: Database User
+      description: Username for the PostgreSQL database.
+
+    - key: postgresVersion
+      type: STRING
+      required: false
+      default: "16-alpine"
+      userVisible: true
+      advanced: true
+      name: PostgreSQL Version
+      description: Docker image tag for PostgreSQL.
+
+  services:
+    - name: postgres
+      image: postgres:${postgresVersion}
+      type: PREBUILT
+      internalPort: 5432
+      public: true
+      publicPorts:
+        - 5432
+      volumes:
+        - id: postgres_data
+          dir: /var/lib/postgresql/data
+      env:
+        POSTGRES_DB:
+          default: ${databaseName}
+          readonly: true
+          expose: true
+
+        POSTGRES_USER:
+          default: ${databaseUser}
+          readonly: true
+          expose: true
+
+        POSTGRES_PASSWORD:
+          generated: true
+          secret: true
+          expose: false
+
+        DATABASE_URL:
+          default: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${SERVER_PUBLIC_IP}:5432/${POSTGRES_DB}
+          generated: true
+          secret: true
+          expose: false
+          readonly: true
+
+  security:
+    publicPorts:
+      - 5432
+    internalOnlyPorts: []
+    provisioningPorts:
+      - 22
+    secrets:
+      - POSTGRES_PASSWORD
+      - DATABASE_URL
+
+  healthChecks:
+    - name: postgres-ready
+      type: COMMAND
+      command: pg_isready -h ${SERVER_PUBLIC_IP} -p 5432 -U ${POSTGRES_USER} -d ${POSTGRES_DB}
+      expectedOutput: accepting connections
+
+  instructions:
+    - type: TEXT
+      title: PostgreSQL Connection String
+      content: postgresql://${POSTGRES_USER}:<hidden-password>@${SERVER_PUBLIC_IP}:5432/${POSTGRES_DB}
+
+    - type: PASSWORD
+      title: PostgreSQL Password
+      content: ${POSTGRES_PASSWORD}
+      category: Credentials
+
+    - type: WARNING
+      title: MVP public access
+      content: This PostgreSQL server is publicly reachable on port 5432 and protected by password only. Use this for MVP/testing only. Production mode should use IP allowlisting, private networking, VPN, or TLS.
+
+  readme: |
+    # PostgreSQL Managed Server
+
+    This template deploys PostgreSQL using Docker with generated credentials and persistent storage.
+
+    The MVP connection string format is:
+
+    postgresql://<user>:<password>@<server-ip>:5432/<database>
+
+    TisiOps creates the server, installs Docker, starts PostgreSQL, runs health checks, stores logs, and returns a masked connection string.

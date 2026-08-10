@@ -120,7 +120,7 @@ export function toSafeDeployment(
     // Assumed reusable until a decryption check says otherwise; the detail
     // view runs that check, list views do not need it.
     canReuseEnvironmentVariables: environment?.reusable ?? true,
-    canRetry: canRetry(row.status),
+    canRetry: row.type === "VERCEL" && canRetry(row.status),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   }

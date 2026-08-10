@@ -45,6 +45,7 @@ enum ChatRole {
 enum DeploymentType {
   VERCEL
   N8N
+  POSTGRES
 }
 
 enum DeploymentProvider {
@@ -103,6 +104,7 @@ enum JobStatus {
 
 enum JobType {
   N8N_MANAGED_SERVER_DEPLOYMENT
+  POSTGRES_MANAGED_SERVER_DEPLOYMENT
   VERCEL_DEPLOYMENT
   AWS_APP_DEPLOYMENT
   RETRY_DEPLOYMENT
@@ -126,6 +128,11 @@ enum ServerStatus {
   STOPPING
   STOPPED
   STARTING
+  CONNECTED
+  VERIFYING
+  NEEDS_ATTENTION
+  UNREACHABLE
+  DISCONNECTED
 }
 
 enum HostingMode {
@@ -152,6 +159,22 @@ enum EnvTarget {
   PRODUCTION
   PREVIEW
   DEVELOPMENT
+}
+
+enum TemplateStatus {
+  DRAFT
+  VALIDATED
+  TESTED
+  PUBLISHED
+  DISABLED
+  ARCHIVED
+}
+
+enum TemplateRunnerType {
+  DOCKER_COMPOSE_SERVER_RUNNER
+  DATABASE_SERVICE_RUNNER
+  N8N_MANAGED_SERVER_RUNNER
+  CUSTOM_HANDLER
 }
 
 /// One row per user per day per model.
@@ -198,8 +221,34 @@ model User {
   deployments  Deployment[]
   servers      Server[]
   aiUsage      AiUsageDaily[]
+  templates    AdminTemplate[]
 
   @@index([email])
+}
+
+model AdminTemplate {
+  id             String             @id @default(cuid())
+  templateId     String
+  name           String
+  description    String
+  category       String
+  tags           String[]
+  iconUrl        String?
+  coverImageUrl  String?
+  yamlContent    String
+  parsedManifest Json
+  status         TemplateStatus     @default(DRAFT)
+  runnerType     TemplateRunnerType?
+  version        Int                @default(1)
+  createdBy      String
+  creator        User               @relation(fields: [createdBy], references: [id], onDelete: Restrict)
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@unique([templateId, version])
+  @@index([status, updatedAt])
+  @@index([templateId, version])
+  @@index([createdBy])
 }
 
 /// One deployment run, owned by exactly one user. Reads go through
@@ -286,6 +335,7 @@ model Deployment {
   jobs                 DeploymentJob[]
   servers              Server[]
   n8nConfig            N8nDeploymentConfig?
+  postgresConfig       PostgresDeploymentConfig?
 
   @@index([userId, createdAt])
 }
@@ -325,31 +375,61 @@ model DeploymentJob {
   @@index([deploymentId])
 }
 
-/// A machine TisiOps created in its own AWS account, as reported by Terraform.
+/// A machine connected to TisiOps or created in AWS by Terraform.
 model Server {
-  id           String     @id @default(cuid())
+  id           String      @id @default(cuid())
   userId       String
-  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  deploymentId String
-  deployment   Deployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deploymentId String?
+  deployment   Deployment? @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
 
-  provider     DeploymentProvider @default(TISIOPS_MANAGED_AWS)
-  region       String
-  instanceType String
+  name         String      @default("Ubuntu Server")
+  provider     String      @default("CUSTOM_VPS")
+  region       String?
+  instanceType String?
 
   awsInstanceId      String?
   awsSecurityGroupId String?
   elasticIp          String?
   publicIp           String?
-  sshUsername        String?
+  host               String?
+  sshPort            Int         @default(22)
+  sshUsername        String?     @default("ubuntu")
+  osType             String?     @default("Ubuntu")
+  osVersion          String?
 
-  status ServerStatus @default(PROVISIONING)
+  dockerStatus       String?
+  sudoStatus         String?
+  cpuInfo            String?
+  memoryMb           Int?
+  diskGb             Int?
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  status             ServerStatus @default(VERIFYING)
+  credentialsStored  Boolean      @default(false)
+
+  lastCheckedAt      DateTime?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  credentials        ServerCredential?
 
   @@index([userId, createdAt])
   @@index([deploymentId])
+}
+
+model ServerCredential {
+  id                  String   @id @default(cuid())
+  serverId            String   @unique
+  server              Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  userId              String
+  authType            String   @default("key")
+  encryptedPrivateKey String?
+  encryptedPassword   String?
+  encryptedPassphrase String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([userId])
 }
 
 /// What the user asked for, plus the secrets the worker generated for them.
@@ -376,6 +456,29 @@ model N8nDeploymentConfig {
   /// their own credentials, so a retry reuses whatever is already here.
   encryptedEncryptionKey String?
   encryptedDbPassword    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model PostgresDeploymentConfig {
+  id           String     @id @default(cuid())
+  deploymentId String     @unique
+  deployment   Deployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+
+  workspaceName   String
+  databaseName    String @default("appdb")
+  databaseUser    String @default("tisiops_user")
+  postgresVersion String @default("16-alpine")
+  region          String @default("ap-south-1")
+  plan            String @default("STARTER")
+  instanceType    String @default("t3.micro")
+  volumeSizeGb    Int    @default(20)
+  host            String?
+  port            Int    @default(5432)
+
+  encryptedPassword    String?
+  encryptedDatabaseUrl String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

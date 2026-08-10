@@ -25,6 +25,7 @@ import {
 import { jobLogger } from "../services/deployment-log.service"
 import { awsAppDeploymentHandler } from "./handlers/awsAppDeployment.handler"
 import { n8nManagedDeploymentHandler } from "./handlers/n8nManagedDeployment.handler"
+import { postgresManagedDeploymentHandler } from "./handlers/postgresManagedDeployment.handler"
 import { repairDeploymentHandler } from "./handlers/repairDeployment.handler"
 import { retryDeploymentHandler } from "./handlers/retryDeployment.handler"
 import {
@@ -64,6 +65,7 @@ const HANDLERS: Record<JobType, Handler> = {
   VERCEL_DEPLOYMENT: vercelDeploymentHandler,
   AWS_APP_DEPLOYMENT: awsAppDeploymentHandler,
   N8N_MANAGED_SERVER_DEPLOYMENT: n8nManagedDeploymentHandler,
+  POSTGRES_MANAGED_SERVER_DEPLOYMENT: postgresManagedDeploymentHandler,
   RETRY_DEPLOYMENT: retryDeploymentHandler,
   REPAIR_DEPLOYMENT: repairDeploymentHandler,
   TERRAFORM_DESTROY: terraformDestroyHandler,
@@ -77,6 +79,7 @@ const RUNNING_STATUS: Record<JobType, DeploymentStatus> = {
   VERCEL_DEPLOYMENT: "BUILDING",
   AWS_APP_DEPLOYMENT: "PROVISIONING_INFRA",
   N8N_MANAGED_SERVER_DEPLOYMENT: "RUNNING",
+  POSTGRES_MANAGED_SERVER_DEPLOYMENT: "RUNNING",
   RETRY_DEPLOYMENT: "RETRYING",
   REPAIR_DEPLOYMENT: "RUNNING",
   TERRAFORM_DESTROY: "RUNNING",

@@ -151,32 +151,40 @@ export function DeploymentStatus({ id }: { id: string }) {
    * repository, and turns a page you scan in two seconds into one you have to
    * read. Hairline rows put them back in a column the eye can run down.
    */
-  const spec: { label: string; value: string; mono?: boolean }[] = [
-    {
-      label: "Repository",
-      value: `${deployment.repositoryOwner}/${deployment.repositoryName}`,
-      mono: true,
-    },
-    { label: "Branch", value: deployment.branch, mono: true },
-    {
-      label: "Root directory",
-      value: deployment.servicePath || "repository root",
-      mono: true,
-    },
-    { label: "Framework", value: deployment.framework ?? "Not detected" },
-    {
-      label: "Build command",
-      value: deployment.buildCommand ?? "Framework default",
-      mono: true,
-    },
-    {
-      label: "Output directory",
-      value: outputDirectoryLabel(deployment.framework),
-    },
-    { label: "Provider", value: "TisiOps Managed Vercel" },
-    { label: "Created", value: formatDateTime(deployment.createdAt) },
-    { label: "Last updated", value: formatDateTime(deployment.updatedAt) },
-  ]
+  const spec: { label: string; value: string; mono?: boolean }[] =
+    deployment.type === "POSTGRES"
+      ? [
+          { label: "Type", value: "PostgreSQL Managed Server" },
+          { label: "Provider", value: "TisiOps Managed AWS" },
+          { label: "Created", value: formatDateTime(deployment.createdAt) },
+          { label: "Last updated", value: formatDateTime(deployment.updatedAt) },
+        ]
+      : [
+          {
+            label: "Repository",
+            value: `${deployment.repositoryOwner}/${deployment.repositoryName}`,
+            mono: true,
+          },
+          { label: "Branch", value: deployment.branch, mono: true },
+          {
+            label: "Root directory",
+            value: deployment.servicePath || "repository root",
+            mono: true,
+          },
+          { label: "Framework", value: deployment.framework ?? "Not detected" },
+          {
+            label: "Build command",
+            value: deployment.buildCommand ?? "Framework default",
+            mono: true,
+          },
+          {
+            label: "Output directory",
+            value: outputDirectoryLabel(deployment.framework),
+          },
+          { label: "Provider", value: "TisiOps Managed Vercel" },
+          { label: "Created", value: formatDateTime(deployment.createdAt) },
+          { label: "Last updated", value: formatDateTime(deployment.updatedAt) },
+        ]
 
   const building = ["BUILDING", "RETRYING", "PREPARING"].includes(
     deployment.status

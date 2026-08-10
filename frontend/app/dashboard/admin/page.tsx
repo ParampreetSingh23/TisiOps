@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation"
+import Link from "next/link"
 
 import { FeatureFlags } from "@/components/admin/feature-flags"
 import { ProviderFlags } from "@/components/admin/provider-flags"
@@ -39,6 +40,22 @@ export default async function AdminPage() {
           </div>
         ))}
       </div>
+
+      <section className="mt-8 rounded-[8px] border border-line bg-surface p-5 shadow-card">
+        <h2 className="font-heading text-lg font-medium tracking-[-0.02em] text-ink-strong">
+          Deployment templates
+        </h2>
+        <p className="mt-1.5 text-sm text-ink-muted">
+          Create, validate, preview, test, and publish YAML templates without
+          changing built-in file templates.
+        </p>
+        <Link
+          href="/dashboard/admin/templates"
+          className="mt-4 inline-flex h-10 items-center justify-center rounded-[6px] bg-brand px-4 text-sm font-semibold text-white transition-colors hover:bg-brand-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+        >
+          Create New Template
+        </Link>
+      </section>
 
       <section className="mt-12">
         <h2 className="font-heading text-lg font-medium tracking-[-0.02em] text-ink-strong">

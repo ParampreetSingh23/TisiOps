@@ -22,6 +22,8 @@ export type ConsoleIntent =
   | "vercel_deployment"
   | "static_site_deployment"
   | "n8n_managed_server_deployment"
+  | "postgres_managed_server_deployment"
+  | "server_connection"
   | "terraform_agent"
   | "deployment_planning"
   | "general_answer"
@@ -289,9 +291,11 @@ export function isStaticSiteIntent(text: string): boolean {
  * proposing the one configuration TisiOps actually deploys.
  */
 const N8N = /\bn8n\b/i
+const POSTGRES =
+  /\b(postgres|postgresql)\b|\b(create|make|provision|deploy|spin\s?up|set\s?up|setup)\b[\s\S]{0,40}\b(database|db)\b/i
 
 const WANTS_NEW_SERVER =
-  /\b(spin|spin\s?up|create|launch|provision|deploy|start|set\s?up|setup|install|host|run|build|new|another)\b/i
+  /\b(spin|spin\s?up|create|make|launch|provision|deploy|start|set\s?up|setup|install|host|run|build|new|another)\b/i
 
 /**
  * Vocabulary about a server that already exists. A question about a failing or
@@ -308,10 +312,25 @@ export function isN8nServerIntent(text: string): boolean {
   return WANTS_NEW_SERVER.test(text)
 }
 
+export function isPostgresServerIntent(text: string): boolean {
+  if (!POSTGRES.test(text)) return false
+  if (/\b(fail|failed|failing|error|logs?|destroy|delete|remove|stop|restart|retry|broken|down|why|debug)\b/i.test(text)) return false
+  return WANTS_NEW_SERVER.test(text) || /\bdatabase|db\b/i.test(text)
+}
+
+const CONNECT_SERVER =
+  /\b(connect|add|bring|link)\b[\s\S]{0,30}\b(server|vps|ubuntu|host|ip|machine)\b|\b(byos|have a server|own server)\b/i
+
+export function isServerConnectIntent(text: string): boolean {
+  return CONNECT_SERVER.test(text)
+}
+
 export function detectIntent(text: string): ConsoleIntent {
   const mentionsRepo = REPO_WORD.test(text) || GITHUB_WORD.test(text)
 
+  if (isServerConnectIntent(text)) return "server_connection"
   if (isN8nServerIntent(text)) return "n8n_managed_server_deployment"
+  if (isPostgresServerIntent(text)) return "postgres_managed_server_deployment"
 
   if (isTerraformIntent(text)) return "terraform_agent"
 

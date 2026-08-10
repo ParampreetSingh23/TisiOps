@@ -13,13 +13,10 @@ import { z } from "zod"
  */
 
 /** The only ports a template may publish. Anything else is refused. */
-export const ALLOWED_PUBLIC_PORTS = [80, 443]
+export const ALLOWED_PUBLIC_PORTS = [80, 443, 5432]
 
-/** Ports that must never be reachable from outside the server. */
-export const NEVER_PUBLIC_PORTS = [5678, 5432]
-
-/** Services every TisiOps template is currently expected to declare. */
-const REQUIRED_SERVICES = ["postgres", "n8n", "caddy"]
+/** Ports that must never be reachable from outside the server, except explicit MVP templates. */
+export const NEVER_PUBLIC_PORTS = [5678]
 
 const port = z.number().int().min(1).max(65535)
 
@@ -79,8 +76,8 @@ const templateSchema = z.object({
       supported: z.array(z.string()).min(1),
     }),
     access: z.object({
-      mode: z.enum(["ELASTIC_IP_HTTP", "DOMAIN_HTTPS"]),
-      publicProtocol: z.enum(["http", "https"]),
+      mode: z.enum(["ELASTIC_IP_HTTP", "DOMAIN_HTTPS", "PUBLIC_PASSWORD_MVP"]),
+      publicProtocol: z.enum(["http", "https", "tcp"]),
       publicPort: port,
       internalAppPort: port,
     }),
@@ -89,8 +86,12 @@ const templateSchema = z.object({
       plan: z.string().min(1),
       instanceType: z.string().min(1),
       volumeSizeGb: z.number().int().positive(),
-      timezone: z.string().min(1),
+      timezone: z.string().min(1).optional(),
       n8nVersion: z.string().min(1).optional(),
+      postgresVersion: z.string().min(1).optional(),
+      databaseName: z.string().min(1).optional(),
+      databaseUser: z.string().min(1).optional(),
+      persistence: z.boolean().optional(),
     }),
     variables: z
       .array(
@@ -117,18 +118,21 @@ const templateSchema = z.object({
       .array(
         z.object({
           name: z.string().min(1),
-          type: z.literal("HTTP"),
-          url: z.string().min(1),
-          expectedStatus: z.array(z.number().int()).min(1),
+          type: z.enum(["HTTP", "COMMAND"]),
+          url: z.string().min(1).optional(),
+          expectedStatus: z.array(z.number().int()).min(1).optional(),
+          command: z.string().min(1).optional(),
+          expectedOutput: z.string().min(1).optional(),
         })
       )
       .min(1, "a template must declare at least one health check"),
     instructions: z
       .array(
         z.object({
-          type: z.enum(["TEXT", "WARNING"]),
+          type: z.enum(["TEXT", "WARNING", "PASSWORD"]),
           title: z.string().min(1),
           content: z.string().min(1),
+          category: z.string().min(1).optional(),
         })
       )
       .min(1, "a template must tell the user how to reach the deployment"),
@@ -153,12 +157,6 @@ export const templateManifestSchema = templateSchema.superRefine(
     for (const [index, name] of names.entries()) {
       if (names.indexOf(name) !== index) {
         fail(`duplicate service name: ${name}`, ["spec", "services", index])
-      }
-    }
-
-    for (const required of REQUIRED_SERVICES) {
-      if (!names.includes(required)) {
-        fail(`missing required service: ${required}`, ["spec", "services"])
       }
     }
 
@@ -190,19 +188,36 @@ export const templateManifestSchema = templateSchema.superRefine(
         fail(`port ${value} is not an allowed public port`, ["spec"])
       }
 
-      if (NEVER_PUBLIC_PORTS.includes(value)) {
+      if (
+        (NEVER_PUBLIC_PORTS.includes(value) ||
+          (value === 5432 && manifest.spec.access.mode !== "PUBLIC_PASSWORD_MVP"))
+      ) {
         fail(`port ${value} must never be public`, ["spec"])
       }
     }
 
     for (const value of NEVER_PUBLIC_PORTS) {
-      if (!manifest.spec.security.internalOnlyPorts.includes(value)) {
+      if (
+        services.some((service) => service.internalPort === value) &&
+        !manifest.spec.security.internalOnlyPorts.includes(value)
+      ) {
         fail(`port ${value} must be listed as internal only`, [
           "spec",
           "security",
           "internalOnlyPorts",
         ])
       }
+    }
+
+    if (
+      manifest.spec.access.mode === "PUBLIC_PASSWORD_MVP" &&
+      manifest.spec.access.publicPort !== 5432
+    ) {
+      fail("PUBLIC_PASSWORD_MVP must publish PostgreSQL on port 5432", [
+        "spec",
+        "access",
+        "publicPort",
+      ])
     }
 
     // A service that publishes nothing must not claim it is public, and one
@@ -236,7 +251,11 @@ export const templateManifestSchema = templateSchema.superRefine(
         }
 
         // The only thing that would put a real secret in the manifest.
-        if (isSecret && variable.default !== undefined) {
+        if (
+          isSecret &&
+          variable.default !== undefined &&
+          !(variable.generated && variable.default.includes("${"))
+        ) {
           fail(`${key} is a secret and must not carry a default value`, path)
         }
 

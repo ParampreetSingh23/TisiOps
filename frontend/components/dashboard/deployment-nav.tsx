@@ -8,6 +8,8 @@ import {
   SiNextdotjs,
   SiNodedotjs,
   SiNodedotjsHex,
+  SiPostgresql,
+  SiPostgresqlHex,
   SiReact,
   SiReactHex,
   SiUbuntu,
@@ -63,6 +65,10 @@ const TEMPLATES: Record<string, { label: string; icon: React.ReactNode }> = {
     icon: <SiUbuntu className="size-4" color={SiUbuntuHex} />,
   },
   N8N: { label: "n8n", icon: <SiN8n className="size-4" color={SiN8nHex} /> },
+  POSTGRES: {
+    label: "PostgreSQL",
+    icon: <SiPostgresql className="size-4" color={SiPostgresqlHex} />,
+  },
   // Simple Icons dropped the AWS mark at the trademark owner's request, so
   // both of these reuse the logos ProviderIcon already inlines.
   AWS_LINUX: { label: "AWS Linux", icon: <ProviderIcon id="aws" /> },

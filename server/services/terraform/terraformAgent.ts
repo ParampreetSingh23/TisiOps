@@ -84,8 +84,8 @@ export async function inspectDeployment(
           elasticIp: server.elasticIp,
           publicIp: server.publicIp,
           securityGroupId: server.awsSecurityGroupId,
-          instanceType: server.instanceType,
-          region: server.region,
+          instanceType: server.instanceType ?? "t3.micro",
+          region: server.region ?? "ap-south-1",
           status: server.status,
         }
       : null,

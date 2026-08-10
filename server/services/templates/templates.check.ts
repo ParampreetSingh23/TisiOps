@@ -29,6 +29,7 @@ import {
 // --- 1. The YAML loads, and 2. it validates ----------------------------------
 
 const manifest = loadTemplateFile("n8n/aws-n8n-server.yaml")
+const postgresManifest = loadTemplateFile("postgres/postgres-managed-server.yaml")
 
 assert.ok(TEMPLATE_ROOT.endsWith("/templates"))
 assert.equal(manifest.apiVersion, "tisiops.com/v1")
@@ -111,13 +112,30 @@ for (const pattern of [/AKIA[0-9A-Z]{16}/, /redis:\/\//, /rediss:\/\//]) {
 assert.equal(getTemplateById("aws-n8n-server").metadata.id, "aws-n8n-server")
 assert.deepEqual(
   listTemplates().map((template) => template.metadata.id),
-  ["aws-n8n-server"]
+  ["aws-n8n-server", "postgres-managed-server"]
 )
 
 const summary = summarize(manifest)
 assert.equal(summary.accessMode, "ELASTIC_IP_HTTP")
 assert.equal(summary.provider, "aws")
 assert.deepEqual(summary.services, ["postgres", "n8n", "caddy"])
+
+assert.equal(
+  getTemplateById("postgres-managed-server").metadata.id,
+  "postgres-managed-server"
+)
+assert.equal(postgresManifest.metadata.name, "PostgreSQL Managed Server")
+assert.equal(postgresManifest.spec.access.mode, "PUBLIC_PASSWORD_MVP")
+assert.equal(postgresManifest.spec.access.publicPort, 5432)
+assert.deepEqual(postgresManifest.spec.security.publicPorts, [5432])
+assert.equal(postgresManifest.spec.services[0]?.name, "postgres")
+assert.equal(postgresManifest.spec.services[0]?.public, true)
+assert.deepEqual(postgresManifest.spec.services[0]?.publicPorts, [5432])
+assert.ok(
+  postgresManifest.spec.instructions.some(
+    (entry) => entry.title === "MVP public access"
+  )
+)
 
 // --- 10. Unknown ids fail, they do not fall back -----------------------------
 

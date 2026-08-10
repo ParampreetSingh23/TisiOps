@@ -21,6 +21,7 @@ export type PortRule = {
 
 export type TemplateName =
   | "aws-n8n-server"
+  | "aws-postgres-server"
   | "aws-app-server"
   | "aws-docker-app-server"
   | "aws-node-server"
@@ -90,6 +91,24 @@ export const TEMPLATES: Record<TemplateName, TemplateDefinition> = {
     defaultInstanceType: "t3.micro",
     volumeSizeGb: { min: 20, max: 100, default: 20 },
     appPort: 5678,
+    requiredApprovals: { cost: true, destructive: true },
+    retryStrategy: "reuse-state",
+    cleanupStrategy: "terraform-destroy",
+    available: true,
+  },
+  "aws-postgres-server": {
+    name: "aws-postgres-server",
+    label: "PostgreSQL managed server",
+    description:
+      "A managed Ubuntu server running PostgreSQL with generated credentials and persistent storage.",
+    modulePath: "aws-postgres-server",
+    bootstrap: "none",
+    risk: "high",
+    allowedRegions: MVP_REGIONS,
+    allowedInstanceTypes: MVP_INSTANCE_TYPES,
+    defaultInstanceType: "t3.micro",
+    volumeSizeGb: { min: 20, max: 100, default: 20 },
+    appPort: 5432,
     requiredApprovals: { cost: true, destructive: true },
     retryStrategy: "reuse-state",
     cleanupStrategy: "terraform-destroy",

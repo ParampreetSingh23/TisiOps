@@ -26,7 +26,19 @@ export async function apiFetch<T>(
     },
   })
 
-  const body = await response.json()
+  const text = await response.text()
+  const body = text
+    ? (() => {
+        try {
+          return JSON.parse(text)
+        } catch {
+          return {
+            success: false,
+            error: `API returned ${response.status} ${response.statusText || "non-JSON response"}`,
+          }
+        }
+      })()
+    : null
 
   if (!response.ok || body?.success === false) {
     throw new Error(body?.error ?? `Request failed: ${response.status}`)

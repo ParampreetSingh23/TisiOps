@@ -1,6 +1,11 @@
 import assert from "node:assert/strict"
 
-import { detectIntent, isN8nServerIntent, isStaticSiteIntent } from "./intent"
+import {
+  detectIntent,
+  isN8nServerIntent,
+  isPostgresServerIntent,
+  isStaticSiteIntent,
+} from "./intent"
 
 /**
  * Run with `npm run check:intent --workspace @tisiops/server`.
@@ -166,6 +171,40 @@ for (const phrase of NOT_A_NEW_N8N) {
       ? "WRONG"
       : detectIntent(phrase),
     `must not start a new n8n server: "${phrase}"`
+  )
+}
+
+const POSTGRES_PHRASES = [
+  "create a postgres database for me",
+  "deploy postgres",
+  "make a postgres server",
+  "spin up postgres",
+  "create database for my app",
+  "setup postgresql",
+]
+
+for (const phrase of POSTGRES_PHRASES) {
+  assert.equal(
+    isPostgresServerIntent(phrase),
+    true,
+    `should ask for a PostgreSQL server: "${phrase}"`
+  )
+  assert.equal(
+    detectIntent(phrase),
+    "postgres_managed_server_deployment",
+    `intent for: "${phrase}"`
+  )
+}
+
+for (const phrase of [
+  "why did my postgres deployment fail",
+  "show postgres logs",
+  "delete my postgres database",
+]) {
+  assert.notEqual(
+    detectIntent(phrase),
+    "postgres_managed_server_deployment",
+    `must not start a new PostgreSQL server: "${phrase}"`
   )
 }
 

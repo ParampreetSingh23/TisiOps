@@ -70,6 +70,13 @@ export const n8nDeploymentSchema = z.object({
   domain: z.string().trim().max(253).nullable().default(null),
 })
 
+export const postgresDeploymentSchema = z.object({
+  workspaceName: z.string().trim().min(3).max(60).nullable().optional(),
+  databaseName: z.string().trim().min(1).max(63).nullable().optional(),
+  databaseUser: z.string().trim().min(1).max(63).nullable().optional(),
+  postgresVersion: z.string().trim().min(1).max(31).nullable().optional(),
+})
+
 /**
  * Terraform Agent plan request. The template name is checked against the
  * registry by the validator — this only shapes the request body.

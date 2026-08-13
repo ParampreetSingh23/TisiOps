@@ -4,7 +4,10 @@ import {
   AlertCircle,
   ArrowLeft,
   Loader2,
+  Pause,
+  Power,
   RefreshCw,
+  Terminal,
   Trash2,
   Wrench,
 } from "lucide-react"
@@ -14,7 +17,7 @@ import { useCallback, useEffect, useState } from "react"
 
 import { ConfirmModal } from "@/components/dashboard/confirm-modal"
 import { apiFetch } from "@/lib/api"
-import { secondaryButton } from "@/lib/ui"
+import { primaryButton, secondaryButton } from "@/lib/ui"
 import { formatStatus, StatusDot, type ServerRecord } from "../page"
 
 export default function ServerDetailPage() {
@@ -27,7 +30,10 @@ export default function ServerDetailPage() {
   const [error, setError] = useState<string | null>(null)
   const [isChecking, setIsChecking] = useState(false)
   const [showConfirmDisconnect, setShowConfirmDisconnect] = useState(false)
+  const [showConfirmPause, setShowConfirmPause] = useState(false)
+  const [showConfirmRestart, setShowConfirmRestart] = useState(false)
   const [isDisconnecting, setIsDisconnecting] = useState(false)
+  const [powerAction, setPowerAction] = useState<"pause" | "restart" | null>(null)
   const [prepareAlert, setPrepareAlert] = useState(false)
 
   const loadServer = useCallback(async () => {
@@ -72,6 +78,23 @@ export default function ServerDetailPage() {
       router.push("/dashboard/servers")
     } catch {
       setIsDisconnecting(false)
+    }
+  }
+
+  const runPowerAction = async (action: "pause" | "restart") => {
+    setPowerAction(action)
+    setError(null)
+    try {
+      const updated = await apiFetch<ServerRecord>(`/api/servers/${serverId}/${action}`, {
+        method: "POST",
+      })
+      setServer(updated)
+      setShowConfirmPause(false)
+      setShowConfirmRestart(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Could not ${action} server`)
+    } finally {
+      setPowerAction(null)
     }
   }
 
@@ -123,6 +146,25 @@ export default function ServerDetailPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {server.status === "CONNECTED" && server.credentialsStored ? (
+            <Link
+              href={`/dashboard/servers/${server.id}/terminal`}
+              className={primaryButton}
+            >
+              <Terminal className="mr-2 size-4" />
+              Open SSH Terminal
+            </Link>
+          ) : (
+            <button
+              disabled
+              className={primaryButton}
+              title="Server must be connected with stored SSH credentials."
+            >
+              <Terminal className="mr-2 size-4" />
+              Open SSH Terminal
+            </button>
+          )}
+
           <button
             onClick={handleCheckHealth}
             disabled={isChecking}
@@ -141,6 +183,29 @@ export default function ServerDetailPage() {
           </button>
 
           <button
+            onClick={() => setShowConfirmPause(true)}
+            disabled={!server.canPause || powerAction !== null}
+            className={secondaryButton}
+            title={server.pauseBlockedReason ?? "Pause server"}
+          >
+            <Pause className="mr-2 size-4 text-ink-muted" />
+            Pause
+          </button>
+
+          <button
+            onClick={() => setShowConfirmRestart(true)}
+            disabled={!server.canRestart || powerAction !== null}
+            className={secondaryButton}
+            title={
+              server.restartBlockedReason ??
+              (server.status === "STOPPED" ? "Start server" : "Restart server")
+            }
+          >
+            <Power className="mr-2 size-4 text-ink-muted" />
+            {server.status === "STOPPED" ? "Start" : "Restart"}
+          </button>
+
+          <button
             onClick={() => setShowConfirmDisconnect(true)}
             disabled={isDisconnecting}
             className="inline-flex h-10 items-center justify-center rounded-[6px] border border-red-200 bg-red-50/50 px-4 text-sm font-medium text-red-700 hover:bg-red-100 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-400"
@@ -149,7 +214,21 @@ export default function ServerDetailPage() {
             Disconnect
           </button>
         </div>
+
+        {/* A stopped server that TisiOps cannot start looks like a broken
+            button unless the page says why, and says what to do instead. */}
+        {server.status === "STOPPED" && server.restartBlockedReason ? (
+          <p className="max-w-2xl text-sm leading-6 text-ink-muted">
+            {server.restartBlockedReason}
+          </p>
+        ) : null}
       </div>
+
+      {error && (
+        <div className="rounded-[6px] border border-[#f0d3cc] bg-[#fdf4f2] p-3 text-xs font-medium text-[#a8341f] dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-300">
+          {error}
+        </div>
+      )}
 
       {prepareAlert && (
         <div className="rounded-[6px] border border-line-warm bg-canvas p-4 text-xs text-ink-default flex items-center justify-between">
@@ -256,6 +335,41 @@ export default function ServerDetailPage() {
         isSubmitting={isDisconnecting}
         onConfirm={confirmDisconnectServer}
         onClose={() => setShowConfirmDisconnect(false)}
+      />
+
+      <ConfirmModal
+        open={showConfirmPause}
+        title="Pause server?"
+        description={
+          server.pauseBlockedReason ??
+          `This will shut down "${server.name}". Apps on it go offline.${
+            server.pauseIsOneWay
+              ? " TisiOps only reaches this server over SSH, so it cannot start it again — you will need to power it on from your provider dashboard."
+              : ""
+          }`
+        }
+        confirmText="Pause Server"
+        cancelText="Cancel"
+        variant="warning"
+        isSubmitting={powerAction === "pause"}
+        onConfirm={() => void runPowerAction("pause")}
+        onClose={() => setShowConfirmPause(false)}
+      />
+
+      <ConfirmModal
+        open={showConfirmRestart}
+        title={server.status === "STOPPED" ? "Start server?" : "Restart server?"}
+        description={
+          server.status === "STOPPED"
+            ? `This will start "${server.name}" again. It may take a minute before SSH and apps are reachable.`
+            : `This will reboot "${server.name}" over SSH. Active terminal sessions and running processes may be interrupted.`
+        }
+        confirmText={server.status === "STOPPED" ? "Start Server" : "Restart Server"}
+        cancelText="Cancel"
+        variant="warning"
+        isSubmitting={powerAction === "restart"}
+        onConfirm={() => void runPowerAction("restart")}
+        onClose={() => setShowConfirmRestart(false)}
       />
     </div>
   )

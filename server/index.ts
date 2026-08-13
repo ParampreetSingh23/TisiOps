@@ -32,7 +32,11 @@ import {
   disconnectServer,
   getUserServerById,
   listUserServers,
+  pauseServer,
+  restartServer,
 } from "./services/servers/server.service"
+import { attachTerminalGateway } from "./services/servers/terminal-gateway"
+import { createTerminalSession } from "./services/servers/terminal.service"
 import { testSshConnection } from "./services/servers/ssh-diagnostic"
 import {
   getAttempts,
@@ -333,6 +337,67 @@ app.delete("/api/servers/:id", async (req, res) => {
   }
 
   res.json({ success: true, data: { status: "disconnected" } })
+})
+
+app.post("/api/servers/:id/pause", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const result = await pauseServer(user.id, String(req.params.id))
+  if (!result.ok) {
+    res.status(result.status).json({ success: false, error: result.error })
+    return
+  }
+
+  res.json({ success: true, data: result.server })
+})
+
+app.post("/api/servers/:id/restart", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const result = await restartServer(user.id, String(req.params.id))
+  if (!result.ok) {
+    res.status(result.status).json({ success: false, error: result.error })
+    return
+  }
+
+  res.json({ success: true, data: result.server })
+})
+
+app.post("/api/servers/:id/terminal/session", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  try {
+    const result = await createTerminalSession(user.id, String(req.params.id), req)
+    if (!result.ok) {
+      res.status(result.status).json({ success: false, error: result.error })
+      return
+    }
+
+    res.status(201).json({
+      success: true,
+      data: {
+        sessionId: result.sessionId,
+        websocketUrl: result.websocketUrl,
+      },
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not create terminal session"
+    console.error("terminal session failed:", message)
+    const needsMigration =
+      message.includes("TerminalSession") ||
+      message.includes("terminalSession") ||
+      message.includes("does not exist")
+
+    res.status(500).json({
+      success: false,
+      error: needsMigration
+        ? "Terminal session storage is not ready. Run database migrations and restart the API."
+        : "Could not create terminal session",
+    })
+  }
 })
 
 /**
@@ -1596,3 +1661,5 @@ const server = app.listen(PORT, async () => {
   process.on("SIGINT", () => void stop("SIGINT"))
   process.on("SIGTERM", () => void stop("SIGTERM"))
 })
+
+attachTerminalGateway(server)

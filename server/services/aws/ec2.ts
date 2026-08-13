@@ -13,12 +13,19 @@ import {
  * difference the user cares about, and it is why this is a separate action
  * rather than a flavour of destroy.
  *
- * Credentials come from the worker's environment, the same ones Terraform uses.
- * They are never passed in, logged, or returned.
+ * Credentials default to the worker's environment — the TisiOps account, the
+ * same one Terraform uses. A bring-your-own server lives in the user's account
+ * instead and is invisible to those keys, so every call here optionally takes
+ * that user's credentials. They are never logged or returned.
  */
 
-function client(region: string): EC2Client {
-  return new EC2Client({ region })
+export type AwsCredentials = {
+  accessKeyId: string
+  secretAccessKey: string
+}
+
+function client(region: string, credentials?: AwsCredentials): EC2Client {
+  return new EC2Client(credentials ? { region, credentials } : { region })
 }
 
 export type PowerResult =
@@ -49,10 +56,11 @@ function describe(error: unknown): string {
 
 export async function stopInstance(
   region: string,
-  instanceId: string
+  instanceId: string,
+  credentials?: AwsCredentials
 ): Promise<PowerResult> {
   try {
-    const response = await client(region).send(
+    const response = await client(region, credentials).send(
       new StopInstancesCommand({ InstanceIds: [instanceId] })
     )
 
@@ -67,10 +75,11 @@ export async function stopInstance(
 
 export async function startInstance(
   region: string,
-  instanceId: string
+  instanceId: string,
+  credentials?: AwsCredentials
 ): Promise<PowerResult> {
   try {
-    const response = await client(region).send(
+    const response = await client(region, credentials).send(
       new StartInstancesCommand({ InstanceIds: [instanceId] })
     )
 
@@ -86,10 +95,11 @@ export async function startInstance(
 /** Current lifecycle state, or null when AWS no longer knows the instance. */
 export async function instanceState(
   region: string,
-  instanceId: string
+  instanceId: string,
+  credentials?: AwsCredentials
 ): Promise<string | null> {
   try {
-    const response = await client(region).send(
+    const response = await client(region, credentials).send(
       new DescribeInstancesCommand({ InstanceIds: [instanceId] })
     )
 
@@ -119,4 +129,46 @@ export async function waitForState(
   }
 
   return false
+}
+
+/**
+ * The instance that answers on this address, or null.
+ *
+ * How a server connected over SSH gets a provider handle: the user gave
+ * TisiOps an IP, and that is enough to find the instance behind it. An Elastic
+ * IP stays associated while the instance is stopped, which is exactly the case
+ * that needs this — a plain public IP is released on stop and will not be
+ * found, and the caller says so rather than guessing.
+ */
+export async function findInstanceByPublicIp(
+  region: string,
+  ip: string,
+  credentials?: AwsCredentials
+): Promise<string | null> {
+  if (!ip) return null
+
+  try {
+    const response = await client(region, credentials).send(
+      new DescribeInstancesCommand({
+        Filters: [
+          {
+            Name: "network-interface.addresses.association.public-ip",
+            Values: [ip],
+          },
+        ],
+      })
+    )
+
+    for (const reservation of response.Reservations ?? []) {
+      for (const instance of reservation.Instances ?? []) {
+        if (instance.InstanceId && instance.State?.Name !== "terminated") {
+          return instance.InstanceId
+        }
+      }
+    }
+
+    return null
+  } catch {
+    return null
+  }
 }

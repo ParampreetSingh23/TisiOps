@@ -50,14 +50,6 @@ const BUILT_INS = [
   },
 ] as const
 
-export type VariableEdit = {
-  key: string
-  name?: string
-  default?: string
-  required?: boolean
-  advanced?: boolean
-}
-
 export type TemplateInput = {
   templateId: string
   name: string
@@ -68,7 +60,6 @@ export type TemplateInput = {
   coverImageUrl?: string | null
   yamlContent: string
   runnerType?: RunnerInput
-  variableEdits?: VariableEdit[]
 }
 
 export type TemplateReview = {
@@ -96,35 +87,6 @@ function runnerToDb(input?: RunnerInput): TemplateRunnerType | null {
 
 function runnerSupported(runner: TemplateRunnerType | null) {
   return runner ? RUNNERS.includes(runner as (typeof RUNNERS)[number]) : false
-}
-
-function patchVariables(
-  manifest: TemplateManifest,
-  edits: VariableEdit[] = []
-): TemplateManifest {
-  if (edits.length === 0) return manifest
-
-  const byKey = new Map(edits.map((edit) => [edit.key, edit]))
-
-  return {
-    ...manifest,
-    spec: {
-      ...manifest.spec,
-      variables: manifest.spec.variables.map((variable) => {
-        const edit = byKey.get(variable.key)
-        if (!edit) return variable
-
-        return {
-          ...variable,
-          name: edit.name?.trim() || variable.name,
-          default:
-            edit.default === undefined ? variable.default : edit.default.trim(),
-          required: edit.required ?? variable.required,
-          advanced: edit.advanced ?? variable.advanced,
-        }
-      }),
-    },
-  }
 }
 
 function securityReview(manifest: TemplateManifest): {
@@ -179,8 +141,48 @@ function securityReview(manifest: TemplateManifest): {
   return { errors, warnings }
 }
 
-export function validateTemplateInput(input: TemplateInput): TemplateReview {
+/**
+ * The creator edits metadata in form fields and the deployment spec in YAML.
+ * The form is the source of truth for metadata, so it is written onto the
+ * manifest rather than compared against it — otherwise renaming a template
+ * means editing the same string in two places and validation fails in between.
+ */
+function applyMetadata(
+  manifest: TemplateManifest,
+  input: TemplateInput
+): TemplateManifest {
+  return {
+    ...manifest,
+    metadata: {
+      ...manifest.metadata,
+      id: input.templateId,
+      name: input.name.trim(),
+      description: input.description.trim(),
+      category: input.category.trim(),
+      icon: input.iconUrl?.trim() || manifest.metadata.icon,
+      tags: input.tags,
+    },
+  }
+}
+
+function metadataErrors(input: TemplateInput): string[] {
   const errors: string[] = []
+
+  // The id is an identifier, not a label: it keys template lookups and is
+  // recorded on every deployment made from this template.
+  if (!/^[a-z0-9-]+$/.test(input.templateId)) {
+    errors.push("Template ID must be lowercase letters, numbers, and dashes")
+  }
+
+  if (!input.name.trim()) errors.push("Name is required")
+  if (!input.description.trim()) errors.push("Description is required")
+  if (!input.category.trim()) errors.push("Category is required")
+
+  return errors
+}
+
+export function validateTemplateInput(input: TemplateInput): TemplateReview {
+  const errors: string[] = metadataErrors(input)
   let raw: unknown
 
   try {
@@ -203,16 +205,8 @@ export function validateTemplateInput(input: TemplateInput): TemplateReview {
     }
   }
 
-  if (parsed.success && parsed.data.metadata.id !== input.templateId) {
-    errors.push("Template ID must match metadata.id in YAML")
-  }
-
-  if (parsed.success && parsed.data.metadata.name !== input.name) {
-    errors.push("Name must match metadata.name in YAML")
-  }
-
   const manifest = parsed.success
-    ? patchVariables(parsed.data, input.variableEdits)
+    ? applyMetadata(parsed.data, input)
     : null
   const security = manifest ? securityReview(manifest) : { errors: [], warnings: [] }
   const dbRunner = runnerToDb(input.runnerType)
@@ -309,7 +303,11 @@ export async function ensureBuiltInTemplates(createdBy: string) {
 
 export async function saveTemplateDraft(input: TemplateInput & { createdBy: string }) {
   const review = validateTemplateInput(input)
-  if (!review.manifest) return { ok: false as const, review }
+  // Drafts are allowed to be invalid, but not to be unidentifiable: templateId
+  // keys every later lookup and version bump.
+  if (!review.manifest || metadataErrors(input).length > 0) {
+    return { ok: false as const, review }
+  }
 
   const prisma = await getPrisma()
   const latest = await prisma.adminTemplate.findFirst({

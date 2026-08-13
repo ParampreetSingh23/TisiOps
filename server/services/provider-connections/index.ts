@@ -1,6 +1,6 @@
 import type { CloudProviderConnection } from "../../db/generated/client"
 import { prisma } from "../../db/prisma"
-import { encryptSecret, last4, maskAccessKeyId } from "../../utils/crypto"
+import { decryptSecret, encryptSecret, last4, maskAccessKeyId } from "../../utils/crypto"
 import type { AwsIdentity } from "../aws/sts"
 
 /**
@@ -106,5 +106,43 @@ export async function getAwsConnectionStatus(userId: string) {
   return {
     connected: connection !== null,
     connection: connection ? toSafeConnection(connection) : null,
+  }
+}
+
+export type AwsConnectionCredentials = {
+  accessKeyId: string
+  secretAccessKey: string
+  region: string
+}
+
+/**
+ * This user's working AWS credentials, decrypted.
+ *
+ * The only caller is server power control, which has to act inside the user's
+ * own account: a bring-your-own EC2 instance is invisible to the TisiOps
+ * account's keys. Nothing here is safe to return from an API — the values stay
+ * inside the service that makes the AWS call.
+ */
+export async function readAwsCredentials(
+  userId: string
+): Promise<AwsConnectionCredentials | null> {
+  const connection = await prisma.cloudProviderConnection.findFirst({
+    where: { userId, provider: "AWS", status: "CONNECTED" },
+    orderBy: { lastVerifiedAt: "desc" },
+  })
+
+  if (!connection?.encryptedAccessKeyId || !connection.encryptedSecretAccessKey) {
+    return null
+  }
+
+  try {
+    return {
+      accessKeyId: decryptSecret(connection.encryptedAccessKeyId),
+      secretAccessKey: decryptSecret(connection.encryptedSecretAccessKey),
+      region: connection.defaultRegion,
+    }
+  } catch {
+    // Encryption key rotated or missing: treat it as no usable connection.
+    return null
   }
 }

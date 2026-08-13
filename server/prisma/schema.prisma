@@ -135,6 +135,13 @@ enum ServerStatus {
   DISCONNECTED
 }
 
+enum TerminalSessionStatus {
+  CONNECTING
+  CONNECTED
+  DISCONNECTED
+  FAILED
+}
+
 enum HostingMode {
   TISIOPS_MANAGED
 }
@@ -216,12 +223,13 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  connections  CloudProviderConnection[]
-  chatSessions AiChatSession[]
-  deployments  Deployment[]
-  servers      Server[]
-  aiUsage      AiUsageDaily[]
-  templates    AdminTemplate[]
+  connections      CloudProviderConnection[]
+  chatSessions     AiChatSession[]
+  deployments      Deployment[]
+  servers          Server[]
+  aiUsage          AiUsageDaily[]
+  templates        AdminTemplate[]
+  terminalSessions TerminalSession[]
 
   @@index([email])
 }
@@ -411,10 +419,31 @@ model Server {
   createdAt          DateTime     @default(now())
   updatedAt          DateTime     @updatedAt
 
-  credentials        ServerCredential?
+  credentials      ServerCredential?
+  terminalSessions TerminalSession[]
 
   @@index([userId, createdAt])
   @@index([deploymentId])
+}
+
+model TerminalSession {
+  id               String                @id @default(cuid())
+  userId           String
+  user             User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serverId         String
+  server           Server                @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  status           TerminalSessionStatus @default(CONNECTING)
+  sessionTokenHash String
+  tokenExpiresAt   DateTime
+  startedAt        DateTime?
+  endedAt          DateTime?
+  lastActivityAt   DateTime?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([serverId, createdAt])
+  @@index([sessionTokenHash])
 }
 
 model ServerCredential {

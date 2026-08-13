@@ -11,6 +11,7 @@ import {
 import Link from "next/link"
 
 import { LockedNotice } from "@/components/dashboard/locked-notice"
+import { OverviewCharts } from "@/components/dashboard/overview-charts"
 import { GithubConnect } from "@/components/deployment/github-connect"
 import { canUseFeature } from "@/lib/feature-guard"
 import { getFeatures } from "@/lib/feature-store"
@@ -75,16 +76,17 @@ export default async function OverviewPage({
     {
       title: "Choose a cloud provider",
       detail: "AWS managed servers or bring your own VPS.",
-      done: false,
+      done: stats.connectedProviders > 0 || stats.providerBreakdown.length > 0,
       action: { label: "Choose", href: "/dashboard/new-deployment/create" },
     },
     {
       title: "Deploy your first app",
       detail: "TisiOps prepares the plan and asks for approval before running.",
-      done: false,
+      done: stats.deployments > 0,
       action: { label: "Deploy", href: "/dashboard/new-deployment/create" },
     },
   ]
+  const completedSteps = setupSteps.filter((step) => step.done).length
 
   const metrics = [
     { label: "Deployments", value: stats.deployments, icon: Rocket, isAccent: false },
@@ -147,6 +149,8 @@ export default async function OverviewPage({
         </div>
       </div>
 
+      <OverviewCharts stats={stats} />
+
       {/* Setup & Activity Section */}
       <div className="grid gap-5 lg:grid-cols-12">
         {/* Onboarding Checklist */}
@@ -161,7 +165,7 @@ export default async function OverviewPage({
               </p>
             </div>
             <span className="rounded-[4px] border border-line bg-canvas px-2.5 py-1 text-xs font-mono font-medium text-ink-muted">
-              {githubConnected ? "1 of 3 complete" : "0 of 3 complete"}
+              {completedSteps} of 3 complete
             </span>
           </div>
 
@@ -215,24 +219,59 @@ export default async function OverviewPage({
             />
           </div>
 
-          <section className="rounded-lg border border-line bg-surface p-5 text-center shadow-card">
-            <div className="py-2 text-center">
-              <span className="mx-auto flex size-10 items-center justify-center rounded-[8px] bg-canvas text-ink-muted">
-                <Rocket className="size-5" aria-hidden />
-              </span>
-              <h2 className="mt-3 text-sm font-semibold tracking-[-0.01em] text-ink-strong">
-                No active deployments
-              </h2>
-              <p className="mt-1.5 text-sm text-ink-muted">
-                Your deployments and servers will show up here with status and live logs.
-              </p>
+          <section className="rounded-lg border border-line bg-surface p-5 shadow-card">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h2 className="text-sm font-semibold tracking-[-0.01em] text-ink-strong">
+                  Latest deployments
+                </h2>
+                <p className="mt-1 text-sm text-ink-muted">
+                  Recent app state from your deployment history.
+                </p>
+              </div>
               <Link
                 href="/dashboard/new-deployment/create"
-                className="mt-4 inline-flex h-9 items-center justify-center rounded-[6px] bg-brand px-4 text-xs font-semibold text-white transition-colors duration-150 ease-out hover:bg-brand-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+                className="inline-flex h-8 shrink-0 items-center justify-center rounded-[6px] bg-brand px-3.5 text-xs font-semibold text-white transition-colors duration-150 ease-out hover:bg-brand-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
               >
-                Create deployment
+                Create
               </Link>
             </div>
+
+            {stats.recentDeployments.length > 0 ? (
+              <div className="mt-4 divide-y divide-line border-t border-line">
+                {stats.recentDeployments.map((deployment) => (
+                  <Link
+                    key={deployment.id}
+                    href={`/dashboard/deployments/${deployment.id}`}
+                    className="flex items-center justify-between gap-3 py-3 text-sm transition-colors duration-150 ease-out hover:text-brand"
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate font-medium text-ink-strong">
+                        {deployment.appName}
+                      </span>
+                      <span className="mt-0.5 block text-xs text-ink-muted">
+                        {deployment.provider}
+                      </span>
+                    </span>
+                    <span className="shrink-0 rounded-[4px] border border-line bg-canvas px-2 py-0.5 font-mono text-[11px] text-ink-muted">
+                      {deployment.status}
+                    </span>
+                  </Link>
+                ))}
+              </div>
+            ) : (
+              <div className="py-8 text-center">
+                <span className="mx-auto flex size-10 items-center justify-center rounded-[8px] bg-canvas text-ink-muted">
+                  <Rocket className="size-5" aria-hidden />
+                </span>
+                <h3 className="mt-3 text-sm font-semibold tracking-[-0.01em] text-ink-strong">
+                  No deployments yet
+                </h3>
+                <p className="mt-1.5 text-sm text-ink-muted">
+                  Create one and this panel becomes your live status feed.
+                </p>
+              </div>
+            )}
           </section>
         </div>
       </div>

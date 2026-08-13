@@ -20,7 +20,6 @@ import {
   setTemplateVisible,
   validateTemplateInput,
   type RunnerInput,
-  type VariableEdit,
 } from "@tisiops/server/services/templates/admin"
 import { auth } from "@clerk/nextjs/server"
 
@@ -83,10 +82,6 @@ function formInput(formData: FormData) {
     .split(",")
     .map((tag) => tag.trim())
     .filter(Boolean)
-  const variableEdits = JSON.parse(
-    String(formData.get("variableEdits") ?? "[]")
-  ) as VariableEdit[]
-
   return {
     templateId: String(formData.get("templateId") ?? "").trim(),
     name: String(formData.get("name") ?? "").trim(),
@@ -97,7 +92,6 @@ function formInput(formData: FormData) {
     coverImageUrl: String(formData.get("coverImageUrl") ?? "").trim() || null,
     yamlContent: String(formData.get("yamlContent") ?? ""),
     runnerType: String(formData.get("runnerType") ?? "") as RunnerInput,
-    variableEdits,
   }
 }
 

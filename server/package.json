@@ -39,7 +39,8 @@
     "./services/deployments/lifecycle": "./services/deployments/lifecycle.service.ts",
     "./services/deployments/overview": "./services/deployments/overview.service.ts",
     "./services/templates": "./services/templates/template-registry.ts",
-    "./services/templates/admin": "./services/templates/admin-templates.ts"
+    "./services/templates/admin": "./services/templates/admin-templates.ts",
+    "./services/templates/builder": "./services/templates/template-builder.ts"
   },
   "scripts": {
     "dev": "tsx watch --env-file=.env index.ts",
@@ -62,7 +63,9 @@
     "check:lifecycle": "tsx services/deployments/lifecycle.check.ts",
     "check:intent": "tsx services/github/intent.check.ts",
     "check:templates": "tsx services/templates/templates.check.ts",
-    "check:admin-templates": "tsx services/templates/admin-templates.check.ts"
+    "check:admin-templates": "tsx services/templates/admin-templates.check.ts",
+    "check:template-builder": "tsx services/templates/template-builder.check.ts",
+    "check:server-status": "tsx services/servers/server-status.check.ts"
   },
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.1106.0",
@@ -76,14 +79,18 @@
     "express": "^5.2.1",
     "ioredis": "^6.0.0",
     "next": "16.2.6",
+    "ssh2": "^1.17.0",
     "tar-stream": "^3.2.0",
+    "ws": "^8.21.3",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
+    "@types/ssh2": "^1.15.5",
     "@types/tar-stream": "^3.1.4",
+    "@types/ws": "^8.18.1",
     "dotenv": "^17.2.4",
     "prisma": "^7.9.1",
     "tsx": "^4.23.11",

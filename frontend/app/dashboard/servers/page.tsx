@@ -46,10 +46,16 @@ export type ServerRecord = {
     | "DISCONNECTED"
     | "READY"
     | "PROVISIONING"
+    | "STARTING"
     | "STOPPED"
     | "STOPPING"
     | "TERMINATED"
   credentialsStored: boolean
+  canPause?: boolean
+  canRestart?: boolean
+  pauseBlockedReason?: string | null
+  restartBlockedReason?: string | null
+  pauseIsOneWay?: boolean
   lastCheckedAt?: string
   createdAt: string
   updatedAt: string

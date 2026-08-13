@@ -67,4 +67,58 @@ assert.ok(
   exposedSecret.errors.some((error) => error.includes("must set expose: false"))
 )
 
+// The creator edits metadata in form fields, so the form wins over whatever the
+// YAML happens to say. Refusing the mismatch instead made every rename a manual
+// two-place edit, which is what "the template creator is not working" meant.
+const renamed = validateTemplateInput({
+  templateId: "postgres-lite",
+  name: "PostgreSQL Lite",
+  description: "A smaller managed PostgreSQL server.",
+  category: "databases",
+  tags: ["postgresql", "lite"],
+  iconUrl: "postgresql",
+  yamlContent,
+  runnerType: "database-service-runner",
+})
+
+assert.equal(
+  renamed.valid,
+  true,
+  `renaming in the form must not fail validation: ${renamed.errors.join(", ")}`
+)
+assert.equal(renamed.manifest?.metadata.id, "postgres-lite")
+assert.equal(renamed.manifest?.metadata.name, "PostgreSQL Lite")
+assert.equal(renamed.manifest?.metadata.description, "A smaller managed PostgreSQL server.")
+assert.equal(renamed.manifest?.metadata.category, "databases")
+assert.equal(renamed.manifest?.metadata.icon, "postgresql")
+assert.deepEqual(renamed.manifest?.metadata.tags, ["postgresql", "lite"])
+
+// An icon given as a URL is still a valid icon, but an id is an identifier and
+// has to stay one — it ends up in template lookups and deployment records.
+const badId = validateTemplateInput({
+  templateId: "Postgres Lite",
+  name: "PostgreSQL Lite",
+  description: "A smaller managed PostgreSQL server.",
+  category: "database",
+  tags: [],
+  yamlContent,
+  runnerType: "database-service-runner",
+})
+
+assert.equal(badId.valid, false)
+assert.ok(badId.errors.some((error) => error.toLowerCase().includes("template id")))
+
+const missingName = validateTemplateInput({
+  templateId: "postgres-lite",
+  name: "   ",
+  description: "A smaller managed PostgreSQL server.",
+  category: "database",
+  tags: [],
+  yamlContent,
+  runnerType: "database-service-runner",
+})
+
+assert.equal(missingName.valid, false)
+assert.ok(missingName.errors.some((error) => error.toLowerCase().includes("name")))
+
 console.log("admin template creator checks passed")

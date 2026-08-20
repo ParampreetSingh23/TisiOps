@@ -40,9 +40,13 @@ export function redisTarget(): string {
  * `rediss://` turns TLS on by itself, so no extra option is needed for the
  * Redis Cloud TLS endpoint.
  */
-export function createRedis(connectionName = "tisiops"): Redis {
+export function createRedis(
+  connectionName = "tisiops",
+  options: { failFast?: boolean } = {}
+): Redis {
   const url = process.env.REDIS_URL
   if (!url) throw new Error(MISSING_REDIS_URL)
+  const failFast = options.failFast ?? true
 
   return new Redis(url, {
     maxRetriesPerRequest: null,
@@ -50,7 +54,7 @@ export function createRedis(connectionName = "tisiops"): Redis {
     // The API must not hang a request waiting for a queue: a Redis that is
     // down should fail fast so the caller can record it in Postgres and move
     // on, rather than holding the socket open.
-    enableOfflineQueue: false,
+    enableOfflineQueue: !failFast,
     lazyConnect: true,
   })
 }

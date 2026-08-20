@@ -1,4 +1,5 @@
 import { prisma } from "../../db/prisma"
+import { logDeploymentStep, recordDeploymentStep } from "../../services/observability/deployment-spans"
 import { n8nManagedDeploymentHandler } from "./n8nManagedDeployment.handler"
 import type { Handler, HandlerResult } from "./types"
 
@@ -38,12 +39,42 @@ async function checkHealth(url: string): Promise<boolean> {
 
 export const repairDeploymentHandler: Handler = async (context) => {
   const { deploymentId, job, log } = context
+  const spanAttrs = {
+    deploymentId,
+    deploymentJobId: job.id,
+    jobType: job.type,
+  }
 
   const payload = (job.payloadJson ?? {}) as { action?: string }
+  const repairPlanId =
+    typeof (job.payloadJson as { repairPlanId?: unknown })?.repairPlanId === "string"
+      ? (job.payloadJson as { repairPlanId: string }).repairPlanId
+      : null
   const action = payload.action as RepairAction | undefined
+
+  if (repairPlanId) {
+    await prisma.repairPlan.updateMany({
+      where: { id: repairPlanId, deploymentId },
+      data: { status: "RUNNING" },
+    })
+  }
+  await logDeploymentStep({
+    deploymentId,
+    jobId: job.id,
+    step: "repair.worker.started",
+    status: "success",
+    message: "Repair worker started",
+    attrs: spanAttrs,
+  })
 
   if (action !== "HEALTH_CHECK" && action !== "REAPPLY_INFRA") {
     await log(`Repair action refused: ${action ?? "none given"}`, "ERROR")
+    if (repairPlanId) {
+      await prisma.repairPlan.updateMany({
+        where: { id: repairPlanId, deploymentId },
+        data: { status: "FAILED" },
+      })
+    }
     return {
       ok: false,
       error: action ? UNSUPPORTED : "No repair action given.",
@@ -67,8 +98,15 @@ export const repairDeploymentHandler: Handler = async (context) => {
       }
     }
 
-    await log(`Health check started against ${url}`)
-    const healthy = await checkHealth(url)
+    const healthy = await recordDeploymentStep({
+      step: "repair.healthcheck.after_fix",
+      deploymentId,
+      jobId: job.id,
+      attrs: spanAttrs,
+      startedMessage: `Health check started against ${url}`,
+      successMessage: "Repair health check completed",
+      run: () => checkHealth(url),
+    })
 
     await prisma.deployment.update({
       where: { id: deploymentId },
@@ -84,6 +122,22 @@ export const repairDeploymentHandler: Handler = async (context) => {
       healthy ? "Health check passed" : "Health check failed",
       healthy ? "SUCCESS" : "ERROR"
     )
+    await logDeploymentStep({
+      deploymentId,
+      jobId: job.id,
+      step: healthy ? "repair.worker.completed" : "repair.worker.failed",
+      status: healthy ? "success" : "failed",
+      message: healthy ? "Repair completed" : "Repair failed",
+      errorCode: healthy ? null : "HEALTHCHECK_FAILED",
+      attrs: spanAttrs,
+    })
+
+    if (repairPlanId) {
+      await prisma.repairPlan.updateMany({
+        where: { id: repairPlanId, deploymentId },
+        data: { status: healthy ? "COMPLETED" : "FAILED" },
+      })
+    }
 
     return healthy
       ? { ok: true }
@@ -94,7 +148,31 @@ export const repairDeploymentHandler: Handler = async (context) => {
   // that already exists is left alone and only the missing or drifted parts
   // are recreated.
   await log("Re-applying infrastructure from the existing Terraform state")
+  await logDeploymentStep({
+    deploymentId,
+    jobId: job.id,
+    step: "repair.action.executed",
+    status: "started",
+    message: "Re-applying infrastructure from existing Terraform state",
+    attrs: spanAttrs,
+  })
   const result: HandlerResult = await n8nManagedDeploymentHandler(context)
+
+  if (repairPlanId) {
+    await prisma.repairPlan.updateMany({
+      where: { id: repairPlanId, deploymentId },
+      data: { status: result.ok ? "COMPLETED" : "FAILED" },
+    })
+  }
+  await logDeploymentStep({
+    deploymentId,
+    jobId: job.id,
+    step: result.ok ? "repair.worker.completed" : "repair.worker.failed",
+    status: result.ok ? "success" : "failed",
+    message: result.ok ? "Repair completed" : "Repair failed",
+    errorCode: result.ok ? null : "REPAIR_ACTION_FAILED",
+    attrs: spanAttrs,
+  })
 
   return result
 }

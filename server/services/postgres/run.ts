@@ -38,6 +38,10 @@ import {
 } from "./bootstrap"
 import { PUBLIC_PASSWORD_WARNING } from "./index"
 import { validatePostgresConfig, type PostgresConfig } from "./plans"
+import {
+  logDeploymentStep,
+  recordDeploymentStep,
+} from "../observability/deployment-spans"
 
 export type RunOutcome = { ok: true } | { ok: false; error: string }
 
@@ -122,6 +126,13 @@ export async function runPostgresDeployment(
 
   const config = validated.config
   const TEMPLATE = "aws-postgres-server"
+  const spanAttrs = {
+    deploymentId,
+    deploymentJobId: job.id,
+    jobType: job.type,
+    templateId: TEMPLATE,
+    provider: "TISIOPS_MANAGED_AWS",
+  }
   const template = findTemplate(TEMPLATE)
 
   if (!template) return { ok: false, error: "Deployment template not found." }
@@ -152,6 +163,22 @@ export async function runPostgresDeployment(
   }
 
   for (const warning of tfVars.warnings) await log(warning, "WARNING")
+  await logDeploymentStep({
+    deploymentId,
+    jobId: job.id,
+    step: "postgres.plan.loaded",
+    status: "success",
+    message: "PostgreSQL deployment plan loaded",
+    attrs: spanAttrs,
+  })
+  await logDeploymentStep({
+    deploymentId,
+    jobId: job.id,
+    step: "terraform.module.selected",
+    status: "success",
+    message: `Using fixed Terraform module: ${TEMPLATE}`,
+    attrs: spanAttrs,
+  })
   await log(PUBLIC_PASSWORD_WARNING, "WARNING")
   await setStatus(deploymentId, "PROVISIONING_INFRA", "Creating AWS infrastructure.")
 
@@ -195,18 +222,33 @@ export async function runPostgresDeployment(
   })
 
   await log(`Terraform plan generated: ${summary}`, "SUCCESS")
-  await log("Terraform apply started")
+  try {
+    await recordDeploymentStep({
+      step: "terraform.apply",
+      deploymentId,
+      jobId: job.id,
+      attrs: spanAttrs,
+      startedMessage: "Terraform apply started",
+      successMessage: "Terraform apply completed",
+      run: async () => {
+        const result = await apply(cwd, redact, (line) => {
+          if (/^(module\.|aws_)/.test(line) && /(Creating|Creation complete)/.test(line)) {
+            void log(line)
+          }
+        })
 
-  const applyResult = await apply(cwd, redact, (line) => {
-    if (/^(module\.|aws_)/.test(line) && /(Creating|Creation complete)/.test(line)) {
-      void log(line)
-    }
-  })
+        if (!result.ok) {
+          const diagnosis = diagnoseTerraformFailure(result.output)
+          throw new Error(describeFailure(diagnosis))
+        }
 
-  if (!applyResult.ok) {
-    const diagnosis = diagnoseTerraformFailure(applyResult.output)
-    await log(`Terraform failed: ${diagnosis.message}`, "ERROR")
-    return { ok: false, error: describeFailure(diagnosis) }
+        return result
+      },
+    })
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : "Terraform apply failed."
+    await log(`Terraform failed: ${message}`, "ERROR")
+    return { ok: false, error: message }
   }
 
   const outputs = await readOutputs(cwd)
@@ -280,12 +322,28 @@ export async function runPostgresDeployment(
     privateKey: key.privateKey,
   }
 
-  await log("Waiting for SSH")
-  const reachable = await waitForSsh(ssh, {
-    onWait: async () => {
-      await log("Server is not accepting connections yet; still waiting")
-    },
-  })
+  let reachable = false
+  try {
+    reachable = await recordDeploymentStep({
+      step: "server.wait_for_ssh",
+      deploymentId,
+      jobId: job.id,
+      attrs: spanAttrs,
+      startedMessage: "Waiting for SSH",
+      successMessage: "Server reachable",
+      run: async () => {
+        const ok = await waitForSsh(ssh, {
+          onWait: async () => {
+            await log("Server is not accepting connections yet; still waiting")
+          },
+        })
+        if (!ok) throw new Error("SSH_TIMEOUT: server did not become reachable over SSH")
+        return ok
+      },
+    })
+  } catch {
+    reachable = false
+  }
 
   if (!reachable) {
     return {
@@ -294,6 +352,14 @@ export async function runPostgresDeployment(
         "The server was created but did not accept a provisioning connection. Retry — the existing server is reused.",
     }
   }
+  await logDeploymentStep({
+    deploymentId,
+    jobId: job.id,
+    step: "ssh.connected",
+    status: "success",
+    message: "SSH connected",
+    attrs: spanAttrs,
+  })
 
   const step = async (
     label: string,
@@ -316,11 +382,23 @@ export async function runPostgresDeployment(
     return true
   }
 
-  if (
-    !(await step("Installing Docker", buildDockerInstall(), "Docker installed", {
-      timeoutMs: 12 * 60_000,
-    }))
-  ) {
+  try {
+    await recordDeploymentStep({
+      step: "docker.install",
+      deploymentId,
+      jobId: job.id,
+      attrs: spanAttrs,
+      startedMessage: "Docker install started",
+      successMessage: "Docker installed",
+      run: async () => {
+        const ok = await step("Installing Docker", buildDockerInstall(), "Docker installed", {
+          timeoutMs: 12 * 60_000,
+        })
+        if (!ok) throw new Error("DOCKER_INSTALL_FAILED: Docker could not be installed")
+        return ok
+      },
+    })
+  } catch {
     return { ok: false, error: "Docker could not be installed on the server." }
   }
 
@@ -342,20 +420,63 @@ export async function runPostgresDeployment(
   ) {
     return { ok: false, error: "The PostgreSQL configuration could not be written." }
   }
+  await logDeploymentStep({
+    deploymentId,
+    jobId: job.id,
+    step: "docker.compose.write",
+    status: "success",
+    message: "PostgreSQL Compose file generated",
+    attrs: spanAttrs,
+  })
 
   await setStatus(deploymentId, "DEPLOYING", "Starting PostgreSQL.")
 
-  if (
-    !(await step("Starting PostgreSQL", buildStartStack(deploymentId), "PostgreSQL container started", {
-      timeoutMs: 15 * 60_000,
-    }))
-  ) {
+  try {
+    await recordDeploymentStep({
+      step: "docker.compose.up",
+      deploymentId,
+      jobId: job.id,
+      attrs: spanAttrs,
+      startedMessage: "Starting PostgreSQL",
+      successMessage: "PostgreSQL container started",
+      run: async () => {
+        const ok = await step("Starting PostgreSQL", buildStartStack(deploymentId), "PostgreSQL container started", {
+          timeoutMs: 15 * 60_000,
+        })
+        if (!ok) throw new Error("CONTAINER_START_FAILED: PostgreSQL container could not be started")
+        return ok
+      },
+    })
+  } catch {
     return { ok: false, error: "The PostgreSQL container could not be started." }
   }
+  await logDeploymentStep({
+    deploymentId,
+    jobId: job.id,
+    step: "postgres.container.started",
+    status: "success",
+    message: "PostgreSQL container started",
+    attrs: spanAttrs,
+  })
 
   await setStatus(deploymentId, "HEALTH_CHECKING", "Running PostgreSQL health check.")
-  const verified = await runOverSsh(ssh, buildVerifyStack(deploymentId))
-  if (!verified.ok || !verified.output.includes("POSTGRES_READY")) {
+  try {
+    await recordDeploymentStep({
+      step: "postgres.healthcheck.pg_isready",
+      deploymentId,
+      jobId: job.id,
+      attrs: spanAttrs,
+      startedMessage: "Running PostgreSQL health check",
+      successMessage: "PostgreSQL health check passed",
+      run: async () => {
+        const verified = await runOverSsh(ssh, buildVerifyStack(deploymentId))
+        if (!verified.ok || !verified.output.includes("POSTGRES_READY")) {
+          throw new Error("HEALTHCHECK_FAILED: PostgreSQL did not become ready in time")
+        }
+        return verified
+      },
+    })
+  } catch {
     await log("PostgreSQL health check failed", "ERROR")
     return { ok: false, error: "PostgreSQL did not become ready in time." }
   }
@@ -374,5 +495,13 @@ export async function runPostgresDeployment(
   })
 
   await log("PostgreSQL is live", "SUCCESS")
+  await logDeploymentStep({
+    deploymentId,
+    jobId: job.id,
+    step: "postgres.deployment.live",
+    status: "success",
+    message: "PostgreSQL is live",
+    attrs: spanAttrs,
+  })
   return { ok: true }
 }

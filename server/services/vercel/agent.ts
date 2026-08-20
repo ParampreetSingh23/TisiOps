@@ -37,6 +37,10 @@ import {
   waitForBuild,
 } from "./client"
 import { fetchRepositorySource, type SourceFailure } from "../github/source"
+import {
+  logDeploymentStep,
+  recordDeploymentStep,
+} from "../observability/deployment-spans"
 
 /**
  * vercel_deployment_agent — the single implementation behind both entry
@@ -256,6 +260,19 @@ async function runAttempt(input: {
   // approach required and could not have for a managed account.
   await updateDeploymentStatus(deploymentId, { status: "BUILDING" })
 
+  const spanAttrs = {
+    deploymentId,
+    provider: "TISIOPS_MANAGED_VERCEL",
+    templateId: "vercel",
+  }
+
+  await logDeploymentStep({
+    deploymentId,
+    step: "vercel.source.prepared",
+    status: "started",
+    message: "Preparing GitHub source",
+    attrs: spanAttrs,
+  })
   const source = await fetchRepositorySource({
     clerkUserId: input.clerkUserId,
     users: input.users,
@@ -280,8 +297,23 @@ async function runAttempt(input: {
       attemptId
     )
 
+    await logDeploymentStep({
+      deploymentId,
+      step: "vercel.source.prepared",
+      status: "failed",
+      message: source.message,
+      errorCode: source.code,
+      attrs: spanAttrs,
+    })
     return fail(deploymentId, attemptId, source.message, source.code)
   }
+  await logDeploymentStep({
+    deploymentId,
+    step: "vercel.source.prepared",
+    status: "success",
+    message: "GitHub source prepared",
+    attrs: spanAttrs,
+  })
 
   await appendLogs(
     deploymentId,
@@ -296,6 +328,13 @@ async function runAttempt(input: {
     attemptId
   )
 
+  await logDeploymentStep({
+    deploymentId,
+    step: "vercel.deployment.created",
+    status: "started",
+    message: "Sending source to Vercel",
+    attrs: spanAttrs,
+  })
   const result = await deployFromSource({
     repositoryOwner: input.repositoryOwner,
     repositoryName: input.repositoryName,
@@ -329,9 +368,24 @@ async function runAttempt(input: {
       ],
       attemptId
     )
+    await logDeploymentStep({
+      deploymentId,
+      step: "vercel.deployment.created",
+      status: "failed",
+      message: result.error,
+      errorCode: "VERCEL_BUILD_FAILED",
+      attrs: spanAttrs,
+    })
 
     return fail(deploymentId, attemptId, result.error)
   }
+  await logDeploymentStep({
+    deploymentId,
+    step: "vercel.deployment.created",
+    status: "success",
+    message: "Vercel deployment created",
+    attrs: spanAttrs,
+  })
 
   await appendLogs(
     deploymentId,
@@ -356,15 +410,23 @@ async function runAttempt(input: {
 
   // A URL exists the moment Vercel accepts the request; only the build result
   // says whether anything is actually serving from it.
-  const outcome = await waitForBuild(result.deploymentId, {
-    onState: async (state) => {
-      await appendLog(
-        deploymentId,
-        `Vercel status: ${state.toLowerCase()}`,
-        "INFO",
-        attemptId
-      )
-    },
+  const outcome = await recordDeploymentStep({
+    step: "vercel.build.poll",
+    deploymentId,
+    attrs: spanAttrs,
+    startedMessage: "Waiting for Vercel build result",
+    successMessage: "Vercel build poll completed",
+    run: () =>
+      waitForBuild(result.deploymentId, {
+        onState: async (state) => {
+          await appendLog(
+            deploymentId,
+            `Vercel status: ${state.toLowerCase()}`,
+            "INFO",
+            attemptId
+          )
+        },
+      }),
   })
 
   if (outcome.state === "failed") {
@@ -376,6 +438,14 @@ async function runAttempt(input: {
       ],
       attemptId
     )
+    await logDeploymentStep({
+      deploymentId,
+      step: "vercel.deployment.failed",
+      status: "failed",
+      message: outcome.error,
+      errorCode: "VERCEL_BUILD_FAILED",
+      attrs: spanAttrs,
+    })
     return fail(deploymentId, attemptId, outcome.error)
   }
 
@@ -409,7 +479,7 @@ async function runAttempt(input: {
     return toSafeDeployment(stillBuilding)
   }
 
-  return finishReadyDeployment({
+  const ready = await finishReadyDeployment({
     deploymentId,
     attemptId,
     deploymentUrl: outcome.url || result.reservedUrl,
@@ -418,6 +488,14 @@ async function runAttempt(input: {
     projectId: result.projectId,
     vercelDeploymentId: result.deploymentId,
   })
+  await logDeploymentStep({
+    deploymentId,
+    step: "vercel.deployment.ready",
+    status: "success",
+    message: "Vercel deployment ready",
+    attrs: spanAttrs,
+  })
+  return ready
 }
 
 /**

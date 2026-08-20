@@ -1,6 +1,11 @@
 import { clerkClient, clerkMiddleware, getAuth } from "@clerk/express"
+import { SpanStatusCode, trace } from "@opentelemetry/api"
 import cors from "cors"
 import express from "express"
+import { appLog } from "./services/observability/app-logger"
+import { initOpenTelemetry, shutdownOpenTelemetry } from "./services/observability/otel"
+
+initOpenTelemetry()
 
 // Env comes from --env-file=.env in the npm script: ESM hoists imports above
 // any dotenv call here, so the database module would load before it ran.
@@ -42,6 +47,7 @@ import {
   getAttempts,
   getDeployment,
   getDeploymentLogs,
+  getDeploymentTimeline,
   listDeployments,
 } from "./services/deployments/index"
 import {
@@ -78,6 +84,19 @@ import { pingRedis, redisTarget } from "./queues/redis"
 import { analyzeRepository } from "./services/github/analyze"
 import { runGithubAgent } from "./services/github/agent"
 import { detectIntent, isGithubIntent } from "./services/github/intent"
+import {
+  approveRepair,
+  classifyIntent,
+  diagnoseRepair,
+  isAccountMemoryQuestion,
+  repairTargetMessageWhenMissing,
+  TISIOPS_SCOPE_MESSAGE,
+} from "./services/agents/agent-router"
+import type { AgentIntent } from "./services/agents/agent.types"
+import { pendingRepairForSession } from "./services/agents/agent-memory"
+import { resolveAgentContext } from "./services/agents/agent-context"
+import { getDeploymentTelemetrySummary } from "./services/observability/deployment-spans"
+import { signozStatus } from "./services/observability/signoz"
 import { chatMessageSchema, chatSessionCreateSchema } from "./validations/chat"
 import {
   awsConnectionSchema,
@@ -157,6 +176,51 @@ app.use(
 
 app.use(express.json())
 app.use(clerkMiddleware())
+app.use((req, res, next) => {
+  const startedAt = performance.now()
+  const tracer = trace.getTracer("tisiops-http")
+
+  tracer.startActiveSpan(`HTTP ${req.method} ${req.path}`, (span) => {
+    span.setAttribute("http.request.method", req.method)
+    span.setAttribute("url.path", req.path)
+    span.setAttribute("url.full", req.originalUrl)
+
+    res.on("finish", () => {
+      const durationMs = Math.round(performance.now() - startedAt)
+      const statusCode = res.statusCode
+      const spanContext = span.spanContext()
+
+      span.setAttribute("http.response.status_code", statusCode)
+      span.setAttribute("durationMs", durationMs)
+      span.setStatus({
+        code: statusCode >= 500 ? SpanStatusCode.ERROR : SpanStatusCode.OK,
+      })
+
+      appLog(statusCode >= 500 ? "error" : "info", "http.request", {
+        event: "http.request",
+        method: req.method,
+        path: req.path,
+        route: req.route?.path ?? null,
+        statusCode,
+        durationMs,
+        traceId: spanContext.traceId,
+        spanId: spanContext.spanId,
+        userAgent: req.get("user-agent") ?? null,
+      })
+
+      span.end()
+    })
+
+    res.on("close", () => {
+      if (!res.writableEnded) {
+        span.setStatus({ code: SpanStatusCode.ERROR, message: "connection closed" })
+        span.end()
+      }
+    })
+
+    next()
+  })
+})
 
 app.get("/health", (_req, res) => {
   res.json({ success: true, data: { status: "ok" } })
@@ -208,6 +272,202 @@ async function requireDbUser(req: express.Request, res: express.Response) {
 /** Role from the database row plus the allowlist — never from the request. */
 function callerIsAdmin(user: { role: string; email: string }): boolean {
   return user.role === "ADMIN" || isAdminEmail(user.email)
+}
+
+function isDeploymentServerLookupIntent(intent: AgentIntent): boolean {
+  return [
+    "GET_LAST_DEPLOYMENT",
+    "GET_LAST_SERVER",
+    "LIST_DEPLOYMENTS",
+    "LIST_SERVERS",
+    "GET_DEPLOYMENT_STATUS",
+    "GET_SERVER_STATUS",
+  ].includes(intent)
+}
+
+function formatWhen(date: Date): string {
+  return new Intl.DateTimeFormat("en", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date)
+}
+
+function serverAddress(server: {
+  publicIp: string | null
+  elasticIp: string | null
+  host: string | null
+}): string | null {
+  return server.publicIp ?? server.elasticIp ?? server.host ?? null
+}
+
+function deploymentName(deployment: {
+  appName: string
+  template: string | null
+  type: string
+}): string {
+  return deployment.appName || deployment.template || deployment.type
+}
+
+function serverLine(server: {
+  name: string
+  provider: string
+  status: string
+  region: string | null
+  publicIp: string | null
+  elasticIp: string | null
+  host: string | null
+  createdAt: Date
+}): string {
+  return [
+    `${server.name} — ${server.status}`,
+    server.provider,
+    server.region,
+    serverAddress(server),
+    `created ${formatWhen(server.createdAt)}`,
+  ]
+    .filter(Boolean)
+    .join(" · ")
+}
+
+function deploymentLine(deployment: {
+  appName: string
+  template: string | null
+  type: string
+  provider: string
+  status: string
+  publicUrl: string | null
+  previewUrl: string | null
+  createdAt: Date
+}): string {
+  return [
+    `${deploymentName(deployment)} — ${deployment.status}`,
+    deployment.template ?? deployment.type,
+    deployment.provider,
+    deployment.publicUrl ?? deployment.previewUrl,
+    `created ${formatWhen(deployment.createdAt)}`,
+  ]
+    .filter(Boolean)
+    .join(" · ")
+}
+
+async function answerDeploymentServerLookup(
+  userId: string,
+  intent: AgentIntent,
+  text: string
+) {
+  if (intent === "LIST_SERVERS") {
+    const servers = await prisma.server.findMany({
+      where: { userId },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+    })
+
+    return {
+      type: "answer" as const,
+      intent,
+      message: servers.length
+        ? ["Your servers:", ...servers.map((server) => `- ${serverLine(server)}`)].join("\n")
+        : "I do not see any servers in your TisiOps account yet.",
+    }
+  }
+
+  if (intent === "LIST_DEPLOYMENTS") {
+    const deployments = await prisma.deployment.findMany({
+      where: { userId },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+    })
+
+    return {
+      type: "answer" as const,
+      intent,
+      message: deployments.length
+        ? [
+            "Your latest deployments:",
+            ...deployments.map((deployment) => `- ${deploymentLine(deployment)}`),
+          ].join("\n")
+        : "I do not see any deployments in your TisiOps account yet.",
+    }
+  }
+
+  if (intent === "GET_SERVER_STATUS" && /\bstopped\b/i.test(text)) {
+    const stopped = await prisma.server.findMany({
+      where: { userId, status: { in: ["STOPPED", "STOPPING"] } },
+      orderBy: { updatedAt: "desc" },
+      take: 5,
+    })
+
+    return {
+      type: "answer" as const,
+      intent,
+      message: stopped.length
+        ? ["Stopped servers:", ...stopped.map((server) => `- ${serverLine(server)}`)].join("\n")
+        : "I do not see any stopped servers in your TisiOps account.",
+    }
+  }
+
+  if (intent === "GET_LAST_SERVER" || intent === "GET_SERVER_STATUS") {
+    const [server, deployment] = await Promise.all([
+      prisma.server.findFirst({
+        where: { userId },
+        orderBy: { createdAt: "desc" },
+        include: { deployment: true },
+      }),
+      prisma.deployment.findFirst({
+        where: {
+          userId,
+          OR: [{ template: { not: null } }, { type: { in: ["N8N", "POSTGRES"] } }],
+        },
+        orderBy: { createdAt: "desc" },
+        include: { servers: { orderBy: { createdAt: "desc" }, take: 1 } },
+      }),
+    ])
+
+    if (!server && !deployment) {
+      return {
+        type: "answer" as const,
+        intent,
+        message: "I do not see any server-based deployments in your TisiOps account yet.",
+      }
+    }
+
+    if (server && (!deployment || server.createdAt >= deployment.createdAt)) {
+      const detail = server.deployment
+        ? `\nDeployment: ${deploymentName(server.deployment)} — ${server.deployment.status}.`
+        : ""
+      return {
+        type: "answer" as const,
+        intent,
+        message: `${intent === "GET_LAST_SERVER" ? "Your latest server" : "Server status"}:\n${serverLine(server)}${detail}`,
+      }
+    }
+
+    const attachedServer = deployment?.servers[0]
+    return {
+      type: "answer" as const,
+      intent,
+      message: [
+        `${intent === "GET_LAST_SERVER" ? "Your latest server-based deployment" : "Deployment server status"}:`,
+        deployment ? deploymentLine(deployment) : null,
+        attachedServer ? `Server: ${serverLine(attachedServer)}` : "No server row is attached yet.",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    }
+  }
+
+  const deployment = await prisma.deployment.findFirst({
+    where: { userId },
+    orderBy: { createdAt: "desc" },
+  })
+
+  return {
+    type: "answer" as const,
+    intent,
+    message: deployment
+      ? `${intent === "GET_LAST_DEPLOYMENT" ? "Your latest deployment" : "Deployment status"}:\n${deploymentLine(deployment)}`
+      : "I do not see any deployments in your TisiOps account yet.",
+  }
 }
 
 async function markDeploymentUnqueued(deploymentId: string): Promise<void> {
@@ -621,10 +881,106 @@ app.post("/api/chat/sessions/:id/messages", async (req, res) => {
   }
 
   const { content } = parsed.data
+  const intent = detectIntent(content)
+  const agentIntent = classifyIntent(content)
+
+  if (agentIntent === "OUT_OF_SCOPE") {
+    await appendTurn({
+      userId: user.id,
+      sessionId,
+      userContent: content,
+      assistantContent: TISIOPS_SCOPE_MESSAGE,
+    })
+
+    res.json({
+      success: true,
+      data: {
+        type: "answer",
+        intent: agentIntent,
+        message: TISIOPS_SCOPE_MESSAGE,
+      },
+    })
+    return
+  }
+
+  if (isAccountMemoryQuestion(content)) {
+    const replyMessage = user.name
+      ? `Your name is ${user.name}.`
+      : "I do not have a name saved for your account yet."
+
+    await appendTurn({
+      userId: user.id,
+      sessionId,
+      userContent: content,
+      assistantContent: replyMessage,
+    })
+
+    res.json({
+      success: true,
+      data: { type: "answer", intent: agentIntent, message: replyMessage },
+    })
+    return
+  }
 
   const isApprovalPhrase = /^\s*(yes|yep|yeah|sure|approve|approved|proceed|go ahead|start it|deploy it|start|do it|ok|okay)\s*$/i.test(
     content.trim()
   )
+
+  const missingRepairTargetMessage = repairTargetMessageWhenMissing(content)
+  const wantsPendingRepair = isApprovalPhrase || Boolean(missingRepairTargetMessage)
+
+  if (wantsPendingRepair) {
+    const pending = await pendingRepairForSession(user.id, sessionId)
+    if (pending) {
+      const result = await approveRepair({
+        userId: user.id,
+        repairPlanId: pending.repairPlanId,
+        repairActionId: pending.repairActionId,
+      })
+
+      const replyMessage = result.ok
+        ? `Approved. I queued the repair job.\n\nTrack progress:\n${result.progressUrl}`
+        : `Could not queue repair: ${result.error}`
+
+      await appendTurn({
+        userId: user.id,
+        sessionId,
+        userContent: content,
+        assistantContent: replyMessage,
+      })
+
+      res.json({
+        success: true,
+        data: {
+          type: "answer",
+          intent: "REPAIR_DEPLOYMENT",
+          message: replyMessage,
+        },
+      })
+      return
+    }
+
+    if (missingRepairTargetMessage) {
+      const replyMessage = missingRepairTargetMessage
+
+      await appendTurn({
+        userId: user.id,
+        sessionId,
+        userContent: content,
+        assistantContent: replyMessage,
+      })
+
+      res.json({
+        success: true,
+        data: {
+          type: "answer",
+          intent: "REPAIR_DEPLOYMENT",
+          message: replyMessage,
+        },
+      })
+      return
+    }
+  }
 
   if (isApprovalPhrase) {
     const history = await recentHistory(user.id, sessionId)
@@ -733,8 +1089,6 @@ app.post("/api/chat/sessions/:id/messages", async (req, res) => {
     }
   }
 
-  const intent = detectIntent(content)
-
   try {
     // A deployment request is answered by the flow, not the model: the console
     // must plan and ask for approval, never deploy straight from a message.
@@ -782,6 +1136,67 @@ app.post("/api/chat/sessions/:id/messages", async (req, res) => {
               message:
                 "I can help you connect your own server (BYOS). Open the Connect Server wizard to add your server IP and SSH details securely:\n\n[Open Connect Server](/dashboard/servers?connect=true)",
             }
+        : isDeploymentServerLookupIntent(agentIntent)
+          ? await answerDeploymentServerLookup(user.id, agentIntent, content)
+        : agentIntent === "REPAIR_DEPLOYMENT" ||
+            agentIntent === "DIAGNOSE_DEPLOYMENT"
+          ? await (async () => {
+              const diagnosis = await diagnoseRepair({
+                userId: user.id,
+                sessionId,
+              })
+
+              if (!diagnosis) {
+                return {
+                  type: "answer" as const,
+                  intent: agentIntent,
+                  message:
+                    "Select a deployment first. I need a deployment record before I can diagnose or repair it.",
+                }
+              }
+
+              return {
+                type: "answer" as const,
+                intent: agentIntent,
+                message: [
+                  diagnosis.userExplanation,
+                  "",
+                  "Evidence:",
+                  ...diagnosis.evidence.map((item) => `- ${item}`),
+                  "",
+                  agentIntent === "REPAIR_DEPLOYMENT" &&
+                  diagnosis.approvalRequired
+                    ? "Approval required. Reply yes to queue the recommended repair."
+                    : "No execution approval needed.",
+                ].join("\n"),
+              }
+            })()
+        : agentIntent === "CHECK_SERVER_HEALTH"
+          ? await (async () => {
+              const context = await resolveAgentContext({
+                userId: user.id,
+                sessionId,
+                allowLatestFallback: true,
+              })
+
+              return {
+                type: "answer" as const,
+                intent: agentIntent,
+                message: context.activeDeploymentId
+                  ? [
+                      `Deployment status: ${context.latestDeploymentStatus ?? "unknown"}.`,
+                      context.activeTemplateId
+                        ? `Template: ${context.activeTemplateId}.`
+                        : null,
+                      context.latestTelemetrySummary
+                        ? `Details: ${context.latestTelemetrySummary}`
+                        : null,
+                    ]
+                      .filter(Boolean)
+                      .join("\n")
+                  : "Select a deployment first and I can show its server or deployment status.",
+              }
+            })()
         : // Terraform questions are answered from the deployment's own records
           // — template, outputs, state, job history — because a plausible but
           // wrong claim about someone's infrastructure is worse than none.
@@ -1084,6 +1499,102 @@ app.get("/api/deployments/:id/logs", async (req, res) => {
   }
 
   res.json({ success: true, data: logs })
+})
+
+app.get("/api/deployments/:id/timeline", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const timeline = await getDeploymentTimeline(user.id, req.params.id)
+  if (!timeline) {
+    res.status(404).json({ success: false, error: "Deployment not found" })
+    return
+  }
+
+  res.json({
+    success: true,
+    data: {
+      events: timeline,
+      diagnosis: await getDeploymentTelemetrySummary(req.params.id),
+    },
+  })
+})
+
+app.post("/api/ai/repair/diagnose", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const deploymentId =
+    typeof req.body?.deploymentId === "string" ? req.body.deploymentId : null
+
+  const diagnosis = await diagnoseRepair({ userId: user.id, deploymentId })
+  if (!diagnosis) {
+    res.status(404).json({ success: false, error: "Deployment not found" })
+    return
+  }
+
+  res.status(201).json({ success: true, data: diagnosis })
+})
+
+app.post("/api/ai/repair/approve", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const repairPlanId =
+    typeof req.body?.repairPlanId === "string" ? req.body.repairPlanId : null
+  const repairActionId =
+    typeof req.body?.repairActionId === "string" ? req.body.repairActionId : null
+
+  if (!repairPlanId) {
+    res.status(422).json({ success: false, error: "repairPlanId is required" })
+    return
+  }
+
+  const result = await approveRepair({
+    userId: user.id,
+    repairPlanId,
+    repairActionId,
+  })
+
+  if (!result.ok) {
+    res.status(result.status).json({ success: false, error: result.error })
+    return
+  }
+
+  res.json({ success: true, data: result })
+})
+
+app.get("/api/deployments/:id/repair-summary", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const plan = await prisma.repairPlan.findFirst({
+    where: { userId: user.id, deploymentId: req.params.id },
+    orderBy: { createdAt: "desc" },
+  })
+
+  if (!plan) {
+    res.json({ success: true, data: null })
+    return
+  }
+
+  res.json({
+    success: true,
+    data: {
+      repairPlanId: plan.id,
+      deploymentId: plan.deploymentId,
+      status: plan.status,
+      failurePoint: plan.failurePoint,
+      lastSuccessfulStep: plan.lastSuccessfulStep,
+      likelyCause: plan.likelyCause,
+      recommendedFix: plan.recommendedFix,
+      riskLevel: plan.riskLevel,
+      approvalRequired: plan.approvalRequired,
+      repairActions: plan.actionsJson,
+      evidence: plan.evidenceJson,
+      createdAt: plan.createdAt.toISOString(),
+    },
+  })
 })
 
 /**
@@ -1617,6 +2128,38 @@ app.get("/api/admin/queue/health", async (req, res) => {
   })
 })
 
+app.get("/api/admin/observability", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  if (!callerIsAdmin(user)) {
+    res.status(403).json({ success: false, error: "Admins only" })
+    return
+  }
+
+  const last = await prisma.deploymentLog.findFirst({
+    where: { traceId: { not: null } },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true, step: true, message: true, traceId: true },
+  })
+
+  res.json({
+    success: true,
+    data: {
+      ...(await signozStatus()),
+      lastTelemetryEvent: last
+        ? {
+            createdAt: last.createdAt.toISOString(),
+            step: last.step,
+            message: last.message,
+            traceId: last.traceId,
+          }
+        : null,
+      workerServiceName: "tisiops-worker",
+    },
+  })
+})
+
 /**
  * The deployment worker runs in this process unless told otherwise.
  *
@@ -1655,6 +2198,7 @@ const server = app.listen(PORT, async () => {
     console.log(`${signal} received — finishing the current deployment job`)
     server.close()
     await worker.stop()
+    await shutdownOpenTelemetry()
     process.exit(0)
   }
 

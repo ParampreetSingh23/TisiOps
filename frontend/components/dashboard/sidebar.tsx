@@ -103,6 +103,7 @@ const adminGroup: { label: string; items: NavItem[] } = {
   items: [
     { href: "/dashboard/admin", label: "Admin Panel", icon: ShieldCheck },
     { href: "/dashboard/admin/templates", label: "Templates", icon: FileText },
+    { href: "/dashboard/admin/observability", label: "Observability", icon: Waypoints },
   ],
 }
 

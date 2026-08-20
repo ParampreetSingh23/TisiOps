@@ -36,7 +36,13 @@ export type ProgressStep = {
  * list made a stopped server read as "Deploying n8n, 0%" with its start button
  * three cards below the fold.
  */
-export type Phase = "deploying" | "starting" | "live" | "stopped" | "failed"
+export type Phase =
+  | "deploying"
+  | "starting"
+  | "stopping"
+  | "live"
+  | "stopped"
+  | "failed"
 
 /**
  * The restart timeline.
@@ -70,13 +76,11 @@ export type N8nProgress = {
  * WAITING_FOR_DNS is skipped rather than pending when no custom domain was
  * chosen — showing a step that will never run reads as a stall.
  */
-/** Paused states sit outside the deploy timeline entirely. */
-const PAUSED = ["STOPPING", "STOPPED"]
-
 function phaseOf(status: string): Phase {
   if (status === "LIVE") return "live"
   if (status === "STARTING") return "starting"
-  if (PAUSED.includes(status)) return "stopped"
+  if (status === "STOPPING") return "stopping"
+  if (status === "STOPPED") return "stopped"
   if (status === "FAILED" || status === "CANCELLED") return "failed"
   return "deploying"
 }

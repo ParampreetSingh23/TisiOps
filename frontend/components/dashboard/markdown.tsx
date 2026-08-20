@@ -100,10 +100,14 @@ const components: Components = {
 }
 
 export function Markdown({ children }: { children: string }) {
+  const safe = children
+    .replace(/<svg[\s\S]*?<\/svg>/gi, "")
+    .replace(/^\s*(?:svg\s*)+$/gim, "")
+
   return (
     <div className="text-sm leading-relaxed text-ink-default">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-        {children}
+        {safe}
       </ReactMarkdown>
     </div>
   )

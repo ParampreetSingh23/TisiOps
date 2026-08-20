@@ -13,6 +13,8 @@ import Link from "next/link"
 import { useEffect, useState } from "react"
 
 import { DeploymentActions } from "@/components/dashboard/deployment-actions"
+import { AiRepair } from "@/components/dashboard/ai-repair"
+import { DeploymentTimeline } from "@/components/dashboard/deployment-timeline"
 import { TerraformPanel } from "@/components/dashboard/terraform-panel"
 import { apiFetch } from "@/lib/api"
 import { card, primaryButton, secondaryButton } from "@/lib/ui"
@@ -80,10 +82,14 @@ function StatePill({ progress }: { progress: Progress }) {
     failed: { label: "Failed", dot: "bg-[#a8341f]", text: "text-[#a8341f]" },
     deploying: { label: "Deploying", dot: "bg-brand", text: "text-brand" },
     starting: { label: "Starting", dot: "bg-brand", text: "text-brand" },
+    stopping: { label: "Stopping", dot: "bg-brand", text: "text-brand" },
   }
 
   const tone = map[progress.phase] ?? map.deploying
-  const moving = progress.phase === "deploying" || progress.phase === "starting"
+  const moving =
+    progress.phase === "deploying" ||
+    progress.phase === "starting" ||
+    progress.phase === "stopping"
 
   return (
     <span
@@ -165,10 +171,14 @@ export function N8nProgressView({ id }: { id: string }) {
         setLogs(nextLogs)
         setJobs(nextJobs)
 
-        // Only a run in progress can change on its own. A restart counts:
-        // without it the screen sits on "Starting" until someone reloads, and
-        // the link to n8n never appears on its own.
-        if (next.phase === "deploying" || next.phase === "starting") {
+        // Only a run in progress can change on its own. Power transitions
+        // count too, or the screen can keep offering the wrong action while
+        // AWS is still settling.
+        if (
+          next.phase === "deploying" ||
+          next.phase === "starting" ||
+          next.phase === "stopping"
+        ) {
           timer = setTimeout(() => void tick(), POLL_MS)
         }
       } catch (cause) {
@@ -234,6 +244,8 @@ export function N8nProgressView({ id }: { id: string }) {
                 ? "Your n8n workspace is live"
                 : phase === "starting"
                   ? "Starting your n8n workspace"
+                  : phase === "stopping"
+                    ? "Stopping server"
                   : phase === "stopped"
                     ? "Server stopped"
                     : phase === "failed"
@@ -332,6 +344,13 @@ export function N8nProgressView({ id }: { id: string }) {
             </span>
           </p>
         </div>
+      ) : null}
+
+      {phase === "failed" ? (
+        <>
+          <DeploymentTimeline deploymentId={id} />
+          <AiRepair deploymentId={id} prominent />
+        </>
       ) : null}
 
       <dl className={`${card} grid gap-4 sm:grid-cols-4`}>

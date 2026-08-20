@@ -120,6 +120,24 @@ enum JobType {
   VERCEL_DELETE
 }
 
+enum RepairPlanStatus {
+  DRAFT
+  APPROVAL_REQUIRED
+  APPROVED
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum RepairRiskLevel {
+  READ_ONLY
+  PLANNING
+  EXECUTION
+  DESTRUCTIVE
+}
+
 enum ServerStatus {
   PROVISIONING
   READY
@@ -226,6 +244,8 @@ model User {
   connections      CloudProviderConnection[]
   chatSessions     AiChatSession[]
   deployments      Deployment[]
+  repairPlans      RepairPlan[]
+  agentRuns        AgentRun[]
   servers          Server[]
   aiUsage          AiUsageDaily[]
   templates        AdminTemplate[]
@@ -341,6 +361,8 @@ model Deployment {
   environmentVariables DeploymentEnvVar[]
   attempts             DeploymentAttempt[]
   jobs                 DeploymentJob[]
+  repairPlans          RepairPlan[]
+  agentRuns            AgentRun[]
   servers              Server[]
   n8nConfig            N8nDeploymentConfig?
   postgresConfig       PostgresDeploymentConfig?
@@ -544,9 +566,17 @@ model DeploymentLog {
   job          DeploymentJob?     @relation(fields: [jobId], references: [id], onDelete: SetNull)
   level        LogLevel   @default(INFO)
   message      String
+  step         String?
+  stepStatus   String?
+  errorCode    String?
+  durationMs   Int?
+  traceId      String?
+  spanId       String?
+  metadataJson Json?
   createdAt    DateTime   @default(now())
 
   @@index([deploymentId, createdAt])
+  @@index([deploymentId, step, createdAt])
 }
 
 /// Values are encrypted at rest (server/utils/crypto.ts) and never returned
@@ -581,8 +611,59 @@ model AiChatSession {
   activeRepoName    String?
   activeBranch      String?
   activeServicePath String?
+  activeDeploymentId String?
+  latestRepairPlanId String?
+  latestFailurePoint String?
+  latestRecommendedAction String?
+
+  agentRuns AgentRun[]
 
   @@index([userId, updatedAt])
+}
+
+model RepairPlan {
+  id         String           @id @default(cuid())
+  userId     String
+  user       User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deploymentId String
+  deployment Deployment       @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  status     RepairPlanStatus @default(DRAFT)
+
+  failurePoint      String?
+  lastSuccessfulStep String?
+  likelyCause       String
+  recommendedFix    String
+  riskLevel         RepairRiskLevel
+  approvalRequired  Boolean          @default(false)
+  actionsJson       Json
+  evidenceJson      Json
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, deploymentId, createdAt])
+}
+
+model AgentRun {
+  id           String @id @default(cuid())
+  userId       String
+  user         User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionId    String?
+  session      AiChatSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  deploymentId String?
+  deployment   Deployment? @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+
+  agentName     String
+  intent        String
+  inputSummary  String
+  outputSummary String
+  status        String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([deploymentId, createdAt])
 }
 
 model AiChatMessage {

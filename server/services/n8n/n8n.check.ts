@@ -216,6 +216,16 @@ const stopped = buildProgress(deployment("STOPPED", null), "1.2.3.4", "STOPPED")
 assert.equal(stopped.phase, "stopped")
 assert.equal(stopped.percent, 100)
 
+// Still stopping is not stopped yet. If this collapses to "stopped", the UI
+// offers Start while the API correctly refuses it.
+const stopping = buildProgress(
+  deployment("STOPPING", "AWS is still stopping the server."),
+  "1.2.3.4",
+  "STOPPING"
+)
+assert.equal(stopping.phase, "stopping")
+assert.equal(stopping.canRetry, false)
+
 // Starting is its own phase. Reporting it as "stopped" put the start button
 // back on screen while the start job was already running.
 const startingUp = buildProgress(

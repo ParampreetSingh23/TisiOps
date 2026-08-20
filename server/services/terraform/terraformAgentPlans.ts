@@ -104,7 +104,7 @@ export function generateRetryPlan(inspection: TerraformInspection): AgentPlan {
     : undefined
 
   const steps = [
-    `Reuse the existing Terraform state at ${inspection.state.key ?? "the recorded state key"}`,
+    "Reuse the existing Terraform state",
     "Run terraform init and plan against that state",
     "Create only the resources that are missing",
     "Run the bootstrap and health check again",
@@ -236,7 +236,7 @@ export function explainInspection(inspection: TerraformInspection): string {
   }
 
   lines.push(
-    `Terraform state: ${inspection.state.backend === "s3" ? "remote S3" : "local to the worker, development only"}${inspection.state.key ? ` at ${inspection.state.key}` : ""}.`
+    `Terraform state: ${inspection.state.backend === "s3" ? "remote S3" : "local to the worker, development only"}.`
   )
 
   if (inspection.diagnosis) {

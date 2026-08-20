@@ -6,6 +6,15 @@ import { Worker, type Job } from "bullmq"
 
 import type { DeploymentStatus, JobType } from "../db/generated/client"
 import { prisma } from "../db/prisma"
+import { initOpenTelemetry, shutdownOpenTelemetry } from "../services/observability/otel"
+import {
+  deploymentFailedTotal,
+  deploymentSuccessTotal,
+  deploymentTotal,
+  workerJobDurationMs,
+  workerJobFailedTotal,
+} from "../services/observability/metrics"
+import { withSpan } from "../services/observability/trace"
 import {
   DEPLOYMENT_QUEUE,
   type DeploymentJobPayload,
@@ -36,6 +45,8 @@ import { terraformDestroyHandler } from "./handlers/terraformDestroy.handler"
 import { vercelDeleteHandler } from "./handlers/vercelDelete.handler"
 import { vercelDeploymentHandler } from "./handlers/vercelDeployment.handler"
 import type { Handler } from "./handlers/types"
+
+initOpenTelemetry()
 
 /**
  * The TisiOps deployment worker. Start with `npm run worker`.
@@ -100,60 +111,108 @@ function log(message: string): void {
  * message cannot re-run finished work.
  */
 async function process_(job: Job<DeploymentJobPayload>): Promise<void> {
+  const started = Date.now()
   const { deploymentJobId } = job.data
 
-  const row = await prisma.deploymentJob.findUnique({
-    where: { id: deploymentJobId },
-  })
+  return withSpan(
+    "worker.job.process",
+    {
+      deploymentId: job.data.deploymentId,
+      deploymentJobId,
+      jobType: job.data.type,
+      workerId: WORKER_ID,
+    },
+    async () => {
+      const row = await withSpan(
+        "worker.job.load_from_postgres",
+        { deploymentJobId, workerId: WORKER_ID },
+        () =>
+          prisma.deploymentJob.findUnique({
+            where: { id: deploymentJobId },
+          })
+      )
 
-  if (!row) {
-    log(`job ${deploymentJobId} has no Postgres row — dropping`)
-    return
-  }
+      if (!row) {
+        log(`job ${deploymentJobId} has no Postgres row — dropping`)
+        return
+      }
 
-  if (row.status === "SUCCESS" || row.status === "CANCELLED") {
-    log(`job ${row.id} is already ${row.status} — dropping`)
-    return
-  }
+      if (row.status === "SUCCESS" || row.status === "CANCELLED") {
+        log(`job ${row.id} is already ${row.status} — dropping`)
+        return
+      }
 
-  const write = jobLogger(row.deploymentId, row.id)
+      deploymentTotal.add(1, { jobType: row.type })
+      const write = jobLogger(row.deploymentId, row.id)
 
-  await markJobRunning(row.id, WORKER_ID)
-  await write("Worker picked job", "SUCCESS")
-  await write("Job started")
+      await withSpan(
+        "worker.job.mark_running",
+        {
+          deploymentId: row.deploymentId,
+          deploymentJobId: row.id,
+          jobType: row.type,
+          workerId: WORKER_ID,
+        },
+        () => markJobRunning(row.id, WORKER_ID)
+      )
+      await write("Worker picked job", "SUCCESS")
+      await write("Job started")
 
-  await prisma.deployment.update({
-    where: { id: row.deploymentId },
-    data: { status: RUNNING_STATUS[row.type] },
-  })
+      await prisma.deployment.update({
+        where: { id: row.deploymentId },
+        data: { status: RUNNING_STATUS[row.type] },
+      })
 
-  const handler = HANDLERS[row.type]
-  const fresh = await prisma.deploymentJob.findUniqueOrThrow({
-    where: { id: row.id },
-  })
+      const handler = HANDLERS[row.type]
+      const fresh = await prisma.deploymentJob.findUniqueOrThrow({
+        where: { id: row.id },
+      })
 
-  const result = await handler({
-    job: fresh,
-    deploymentId: row.deploymentId,
-    log: write,
-  })
+      const result = await withSpan(
+        "worker.job.dispatch_handler",
+        {
+          deploymentId: row.deploymentId,
+          deploymentJobId: row.id,
+          jobType: row.type,
+          workerId: WORKER_ID,
+        },
+        () =>
+          handler({
+            job: fresh,
+            deploymentId: row.deploymentId,
+            log: write,
+          })
+      )
 
-  if (result.ok) {
-    await finishJob(row.id, "SUCCESS")
-    await write("Job completed", "SUCCESS")
-    log(`job ${row.id} succeeded`)
-    return
-  }
+      if (result.ok) {
+        await withSpan(
+          "worker.job.mark_success",
+          { deploymentId: row.deploymentId, deploymentJobId: row.id, jobType: row.type },
+          () => finishJob(row.id, "SUCCESS")
+        )
+        workerJobDurationMs.record(Date.now() - started, { jobType: row.type, status: "SUCCESS" })
+        deploymentSuccessTotal.add(1, { jobType: row.type })
+        await write("Job completed", "SUCCESS")
+        log(`job ${row.id} succeeded`)
+        return
+      }
 
-  await finishJob(row.id, "FAILED", result.error)
-  await write(`Job failed: ${result.error}`, "ERROR")
+      await withSpan(
+        "worker.job.mark_failed",
+        { deploymentId: row.deploymentId, deploymentJobId: row.id, jobType: row.type },
+        () => finishJob(row.id, "FAILED", result.error)
+      )
+      workerJobDurationMs.record(Date.now() - started, { jobType: row.type, status: "FAILED" })
+      workerJobFailedTotal.add(1, { jobType: row.type })
+      deploymentFailedTotal.add(1, { jobType: row.type })
+      await write(`Job failed: ${result.error}`, "ERROR")
 
-  // The handler may already have set a more specific status — WAITING_FOR_DNS,
-  // ACCESS_BLOCKED — so only a still-running deployment is forced to FAILED.
-  const current = await prisma.deployment.findUnique({
-    where: { id: row.deploymentId },
-    select: { status: true },
-  })
+      // The handler may already have set a more specific status — WAITING_FOR_DNS,
+      // ACCESS_BLOCKED — so only a still-running deployment is forced to FAILED.
+      const current = await prisma.deployment.findUnique({
+        where: { id: row.deploymentId },
+        select: { status: true },
+      })
 
   const unfinished: DeploymentStatus[] = [
     "QUEUED",
@@ -171,18 +230,20 @@ async function process_(job: Job<DeploymentJobPayload>): Promise<void> {
     "STARTING",
   ]
 
-  if (current && unfinished.includes(current.status)) {
-    await prisma.deployment.update({
-      where: { id: row.deploymentId },
-      data: { status: "FAILED", statusDetail: result.error },
-    })
-  }
+      if (current && unfinished.includes(current.status)) {
+        await prisma.deployment.update({
+          where: { id: row.deploymentId },
+          data: { status: "FAILED", statusDetail: result.error },
+        })
+      }
 
-  log(`job ${row.id} failed`)
+      log(`job ${row.id} failed`)
 
-  // Thrown so BullMQ counts the attempt and applies its backoff. The user-facing
-  // record is already written above, so this only drives the retry.
-  throw new Error(result.error)
+      // Thrown so BullMQ counts the attempt and applies its backoff. The user-facing
+      // record is already written above, so this only drives the retry.
+      throw new Error(result.error)
+    }
+  )
 }
 
 /** Direct in-process execution fallback when Redis worker is unavailable or offline. */
@@ -309,7 +370,7 @@ export async function startDeploymentWorker(): Promise<RunningWorker | null> {
   sweep.unref()
 
   const worker = new Worker<DeploymentJobPayload>(DEPLOYMENT_QUEUE, process_, {
-    connection: createRedis("tisiops-worker"),
+    connection: createRedis("tisiops-worker", { failFast: false }),
     concurrency: CONCURRENCY,
     // Matches the queue's cleanup so retained jobs cannot grow past the free
     // tier from this side either.
@@ -349,6 +410,7 @@ async function main(): Promise<void> {
   const stop = async (signal: string) => {
     log(`${signal} received — finishing the current job, then exiting`)
     await running.stop()
+    await shutdownOpenTelemetry()
     await prisma.$disconnect()
     process.exit(0)
   }

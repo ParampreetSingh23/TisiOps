@@ -34,7 +34,7 @@ let queue: Queue<DeploymentJobPayload> | null = null
 export function deploymentQueue(): Queue<DeploymentJobPayload> {
   if (!queue) {
     queue = new Queue<DeploymentJobPayload>(DEPLOYMENT_QUEUE, {
-      connection: createRedis("tisiops-api"),
+      connection: createRedis("tisiops-api", { failFast: false }),
       streams: {
         // BullMQ's event stream grows unbounded by default and would eat the
         // free tier on its own. Nothing reads it; Postgres carries progress.

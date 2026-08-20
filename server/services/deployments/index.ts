@@ -82,6 +82,12 @@ export type SafeLog = {
   id: string
   level: DeploymentLog["level"]
   message: string
+  step: string | null
+  stepStatus: string | null
+  errorCode: string | null
+  durationMs: number | null
+  traceId: string | null
+  spanId: string | null
   /** Which run wrote this line, so retries can be grouped in the UI. */
   attemptId: string | null
   createdAt: string
@@ -131,6 +137,12 @@ export function toSafeLog(row: DeploymentLog): SafeLog {
     id: row.id,
     level: row.level,
     message: row.message,
+    step: row.step,
+    stepStatus: row.stepStatus,
+    errorCode: row.errorCode,
+    durationMs: row.durationMs,
+    traceId: row.traceId,
+    spanId: row.spanId,
     attemptId: row.attemptId,
     createdAt: row.createdAt.toISOString(),
   }
@@ -406,4 +418,31 @@ export async function getDeploymentLogs(
   })
 
   return logs.map(toSafeLog)
+}
+
+export async function getDeploymentTimeline(userId: string, deploymentId: string) {
+  const deployment = await prisma.deployment.findFirst({
+    where: { id: deploymentId, userId },
+    select: { id: true },
+  })
+
+  if (!deployment) return null
+
+  const logs = await prisma.deploymentLog.findMany({
+    where: { deploymentId: deployment.id, step: { not: null } },
+    orderBy: { createdAt: "asc" },
+  })
+
+  return logs.map((log) => ({
+    id: log.id,
+    step: log.step ?? "deployment",
+    status: log.stepStatus ?? "started",
+    level: log.level,
+    message: log.message,
+    errorCode: log.errorCode,
+    durationMs: log.durationMs,
+    traceId: log.traceId,
+    spanId: log.spanId,
+    createdAt: log.createdAt.toISOString(),
+  }))
 }

@@ -3,7 +3,9 @@
 import { AlertTriangle, ExternalLink, Loader2, RotateCw } from "lucide-react"
 
 import { DeploymentActions } from "@/components/dashboard/deployment-actions"
+import { AiRepair } from "@/components/dashboard/ai-repair"
 import { ErrorDialog } from "@/components/dashboard/error-dialog"
+import { DeploymentTimeline } from "@/components/dashboard/deployment-timeline"
 import { GithubConnect } from "@/components/deployment/github-connect"
 import { ProviderIcon } from "@/components/deployment/provider-icon"
 import Link from "next/link"
@@ -311,16 +313,20 @@ export function DeploymentStatus({ id }: { id: string }) {
       ) : null}
 
       {hasFailure ? (
-        <div>
-          <button
-            type="button"
-            onClick={() => setShowError(true)}
-            className={secondaryButton}
-          >
-            <AlertTriangle className="mr-2 size-4 text-[#a8341f]" aria-hidden />
-            View error details
-          </button>
-        </div>
+        <>
+          <DeploymentTimeline deploymentId={deployment.id} />
+          <AiRepair deploymentId={deployment.id} prominent />
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowError(true)}
+              className={secondaryButton}
+            >
+              <AlertTriangle className="mr-2 size-4 text-[#a8341f]" aria-hidden />
+              View error details
+            </button>
+          </div>
+        </>
       ) : null}
 
       <ErrorDialog

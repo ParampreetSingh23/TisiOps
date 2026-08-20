@@ -1,0 +1,10 @@
+services:
+  tisiops-local-logs-collector:
+    image: otel/opentelemetry-collector-contrib:0.139.0
+    container_name: tisiops-local-logs-collector
+    restart: unless-stopped
+    volumes:
+      - ./tisiops-local-logs-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - ../../logs:/logs:ro
+    command:
+      - --config=/etc/otelcol-contrib/config.yaml

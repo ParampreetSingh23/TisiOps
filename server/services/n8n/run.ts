@@ -38,6 +38,10 @@ import {
 } from "../terraform/terraformDiagnostics"
 import { findTemplate } from "../terraform/terraformTemplateRegistry"
 import { validateTerraformVariables } from "../terraform/terraformVariableValidator"
+import {
+  logDeploymentStep,
+  recordDeploymentStep,
+} from "../observability/deployment-spans"
 
 /**
  * One managed-n8n run, start to finish. Called only by the worker.
@@ -248,6 +252,13 @@ export async function runN8nDeployment(
   // The template decides which fixed module runs. Nothing in the job payload
   // can name a module path, only a template the registry already knows.
   const TEMPLATE = "aws-n8n-server"
+  const spanAttrs = {
+    deploymentId,
+    deploymentJobId: job.id,
+    jobType: job.type,
+    templateId: TEMPLATE,
+    provider: "TISIOPS_MANAGED_AWS",
+  }
   const template = findTemplate(TEMPLATE)
   if (!template) return { ok: false, error: "Deployment template not found." }
 
@@ -270,6 +281,22 @@ export async function runN8nDeployment(
   }
 
   await log(`Terraform Agent selected template: ${TEMPLATE}`)
+  await logDeploymentStep({
+    deploymentId,
+    jobId: job.id,
+    step: "n8n.plan.loaded",
+    status: "success",
+    message: "n8n deployment plan loaded",
+    attrs: spanAttrs,
+  })
+  await logDeploymentStep({
+    deploymentId,
+    jobId: job.id,
+    step: "terraform.module.selected",
+    status: "success",
+    message: `Using fixed Terraform module: ${TEMPLATE}`,
+    attrs: spanAttrs,
+  })
   await log("Terraform variables generated")
   await log("Terraform variables validated", "SUCCESS")
   for (const warning of tfVars.warnings) await log(warning, "WARNING")
@@ -339,26 +366,41 @@ export async function runN8nDeployment(
 
   await log(`Terraform plan generated: ${summary}`, "SUCCESS")
 
-  await log("Terraform apply started")
-  const applyResult = await apply(cwd, redact, (line) => {
-    // Only resource-level lines are kept. The rest is noise, and the full
-    // output can still name variables.
-    if (
-      /^(module\.|aws_)/.test(line) &&
-      /(Creating|Creation complete)/.test(line)
-    ) {
-      void log(line)
+  let applyResult
+  try {
+    applyResult = await recordDeploymentStep({
+      step: "terraform.apply",
+      deploymentId,
+      jobId: job.id,
+      attrs: spanAttrs,
+      startedMessage: "Terraform apply started",
+      successMessage: "Terraform apply completed",
+      run: async () => {
+        const result = await apply(cwd, redact, (line) => {
+          // Only resource-level lines are kept. The rest is noise, and the full
+          // output can still name variables.
+          if (
+            /^(module\.|aws_)/.test(line) &&
+            /(Creating|Creation complete)/.test(line)
+          ) {
+            void log(line)
+          }
+        })
+
+        if (!result.ok) {
+          const diagnosis = diagnoseTerraformFailure(result.output)
+          if (diagnosis.nextStep) await log(diagnosis.nextStep, "WARNING")
+          throw new Error(describeFailure(diagnosis))
+        }
+
+        return result
+      },
+    })
+  } catch (cause) {
+    return {
+      ok: false,
+      error: cause instanceof Error ? cause.message : "Terraform apply failed.",
     }
-  })
-
-  if (!applyResult.ok) {
-    // Classified rather than passed through: raw Terraform output names files,
-    // variables, and provider internals, and says nothing about what to do.
-    const diagnosis = diagnoseTerraformFailure(applyResult.output)
-    await log(`Terraform failed: ${diagnosis.message}`, "ERROR")
-    if (diagnosis.nextStep) await log(diagnosis.nextStep, "WARNING")
-
-    return { ok: false, error: describeFailure(diagnosis) }
   }
 
   const outputs = await readOutputs(cwd)
@@ -423,12 +465,28 @@ export async function runN8nDeployment(
     privateKey: key.privateKey,
   }
 
-  await log("Waiting for SSH")
-  const reachable = await waitForSsh(ssh, {
-    onWait: async () => {
-      await log("Server is not accepting connections yet; still waiting")
-    },
-  })
+  let reachable = false
+  try {
+    reachable = await recordDeploymentStep({
+      step: "server.wait_for_ssh",
+      deploymentId,
+      jobId: job.id,
+      attrs: spanAttrs,
+      startedMessage: "Waiting for SSH",
+      successMessage: "Server reachable",
+      run: async () => {
+        const ok = await waitForSsh(ssh, {
+          onWait: async () => {
+            await log("Server is not accepting connections yet; still waiting")
+          },
+        })
+        if (!ok) throw new Error("SSH_TIMEOUT: server did not become reachable over SSH")
+        return ok
+      },
+    })
+  } catch {
+    reachable = false
+  }
 
   if (!reachable) {
     await log("Server did not become reachable over SSH", "ERROR")
@@ -439,7 +497,14 @@ export async function runN8nDeployment(
     }
   }
 
-  await log("Server reachable", "SUCCESS")
+  await logDeploymentStep({
+    deploymentId,
+    jobId: job.id,
+    step: "ssh.connected",
+    status: "success",
+    message: "SSH connected",
+    attrs: spanAttrs,
+  })
 
   /**
    * Runs one bootstrap step, logging it and stopping on failure.
@@ -477,15 +542,26 @@ export async function runN8nDeployment(
     return result.output
   }
 
-  await log("Docker install started")
-  if (
-    !(await step(
-      "Installing Docker and the Compose plugin",
-      buildDockerInstall(),
-      "Docker installed",
-      { timeoutMs: 12 * 60_000 }
-    ))
-  ) {
+  try {
+    await recordDeploymentStep({
+      step: "docker.install",
+      deploymentId,
+      jobId: job.id,
+      attrs: spanAttrs,
+      startedMessage: "Docker install started",
+      successMessage: "Docker installed",
+      run: async () => {
+        const output = await step(
+          "Installing Docker and the Compose plugin",
+          buildDockerInstall(),
+          "Docker installed",
+          { timeoutMs: 12 * 60_000 }
+        )
+        if (!output) throw new Error("DOCKER_INSTALL_FAILED: Docker could not be installed")
+        return output
+      },
+    })
+  } catch {
     return { ok: false, error: "Docker could not be installed on the server." }
   }
 
@@ -507,6 +583,14 @@ export async function runN8nDeployment(
   ) {
     return { ok: false, error: "The n8n configuration could not be written." }
   }
+  await logDeploymentStep({
+    deploymentId,
+    jobId: job.id,
+    step: "n8n.config.generated",
+    status: "success",
+    message: "n8n config generated",
+    attrs: spanAttrs,
+  })
 
   await setStatus(
     deploymentId,
@@ -514,14 +598,26 @@ export async function runN8nDeployment(
     "Starting Postgres, n8n, and Caddy."
   )
 
-  if (
-    !(await step(
-      "Containers starting",
-      buildStartStack(deploymentId),
-      "Containers started",
-      { timeoutMs: 15 * 60_000 }
-    ))
-  ) {
+  try {
+    await recordDeploymentStep({
+      step: "docker.compose.started",
+      deploymentId,
+      jobId: job.id,
+      attrs: spanAttrs,
+      startedMessage: "Containers starting",
+      successMessage: "Containers started",
+      run: async () => {
+        const output = await step(
+          "Containers starting",
+          buildStartStack(deploymentId),
+          "Containers started",
+          { timeoutMs: 15 * 60_000 }
+        )
+        if (!output) throw new Error("CONTAINER_START_FAILED: containers could not be started")
+        return output
+      },
+    })
+  } catch {
     return { ok: false, error: "The n8n containers could not be started." }
   }
 
@@ -546,8 +642,32 @@ export async function runN8nDeployment(
   }
 
   await log("Postgres running", "SUCCESS")
+  await logDeploymentStep({
+    deploymentId,
+    jobId: job.id,
+    step: "postgres.container.started",
+    status: "success",
+    message: "Postgres container started",
+    attrs: spanAttrs,
+  })
   await log("n8n running", "SUCCESS")
+  await logDeploymentStep({
+    deploymentId,
+    jobId: job.id,
+    step: "n8n.container.started",
+    status: "success",
+    message: "n8n container started",
+    attrs: spanAttrs,
+  })
   await log("Caddy running", "SUCCESS")
+  await logDeploymentStep({
+    deploymentId,
+    jobId: job.id,
+    step: "caddy.container.started",
+    status: "success",
+    message: "Caddy container started",
+    attrs: spanAttrs,
+  })
 
   if (config.domainMode === "CUSTOM" && config.domain) {
     await setStatus(
@@ -591,18 +711,27 @@ export async function runN8nDeployment(
   const publicUrl = publicUrlFor(config, outputs.elasticIp)
 
   await setStatus(deploymentId, "HEALTH_CHECKING", "Running the health check.")
-  await log(`Running health check against ${publicUrl}`)
-
-  if (!(await waitForHealth(publicUrl, log))) {
-    await log("Health check did not pass in time", "ERROR")
+  try {
+    await recordDeploymentStep({
+      step: "healthcheck",
+      deploymentId,
+      jobId: job.id,
+      attrs: spanAttrs,
+      startedMessage: `Running health check against ${publicUrl}`,
+      successMessage: "Health check passed",
+      run: async () => {
+        const ok = await waitForHealth(publicUrl, log)
+        if (!ok) throw new Error("HEALTHCHECK_FAILED: health check did not pass in time")
+        return ok
+      },
+    })
+  } catch {
     return {
       ok: false,
       error:
         "The server was created but n8n did not answer in time. Retry to check again — the existing server is reused.",
     }
   }
-
-  await log("Health check passed", "SUCCESS")
 
   await prisma.deployment.update({
     where: { id: deploymentId },
@@ -616,6 +745,14 @@ export async function runN8nDeployment(
   })
 
   await log("n8n is live", "SUCCESS")
+  await logDeploymentStep({
+    deploymentId,
+    jobId: job.id,
+    step: "deployment.live",
+    status: "success",
+    message: "n8n is live",
+    attrs: spanAttrs,
+  })
 
   if (!config.domain) {
     await log(

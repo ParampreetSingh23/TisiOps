@@ -6,6 +6,9 @@ import type {
 import { prisma } from "../db/prisma"
 import { enqueueDeploymentJob } from "../queues/deployment.queue"
 import { logToDeployment } from "./deployment-log.service"
+import { redisQueueJobTotal } from "./observability/metrics"
+import { logDeploymentStep } from "./observability/deployment-spans"
+import { withSpan } from "./observability/trace"
 
 /**
  * The Postgres side of the queue.
@@ -60,63 +63,92 @@ export async function createAndQueueJob(input: {
   type: JobType
   payload: Record<string, unknown>
 }): Promise<QueuedJob> {
-  const job = await prisma.deploymentJob.create({
-    data: {
+  return withSpan(
+    "deployment.job.created",
+    {
       deploymentId: input.deploymentId,
-      type: input.type,
-      status: "PENDING",
-      payloadJson: input.payload as never,
+      jobType: input.type,
     },
-  })
-
-  await logToDeployment({
-    deploymentId: input.deploymentId,
-    jobId: job.id,
-    message: "Deployment job created",
-  })
-
-  const published = await enqueueDeploymentJob({
-    deploymentJobId: job.id,
-    deploymentId: input.deploymentId,
-    type: input.type,
-  })
-
-  if (!published.ok) {
-    // Redis queue is not available: fallback to in-process execution runner.
-    const queued = await prisma.deploymentJob.update({
-      where: { id: job.id },
-      data: { status: "QUEUED", errorMessage: null },
-    })
-
-    await logToDeployment({
-      deploymentId: input.deploymentId,
-      jobId: job.id,
-      message: "Redis queue unavailable — executing job in backend process runner",
-      level: "INFO",
-    })
-
-    // Import lazily to avoid circular dependency
-    import("../workers/deployment.worker").then(({ executeJobDirectly }) => {
-      setImmediate(() => {
-        void executeJobDirectly(job.id)
+    async () => {
+      const job = await prisma.deploymentJob.create({
+        data: {
+          deploymentId: input.deploymentId,
+          type: input.type,
+          status: "PENDING",
+          payloadJson: input.payload as never,
+        },
       })
-    }).catch(() => {})
 
-    return { ok: true, job: queued }
-  }
+      await logDeploymentStep({
+        deploymentId: input.deploymentId,
+        jobId: job.id,
+        step: "deployment.job.created",
+        status: "success",
+        message: "Deployment job created",
+        attrs: { deploymentJobId: job.id, jobType: input.type },
+      })
 
-  const queued = await prisma.deploymentJob.update({
-    where: { id: job.id },
-    data: { status: "QUEUED", errorMessage: null },
-  })
+      const published = await withSpan(
+        "deployment.redis.queued",
+        {
+          deploymentId: input.deploymentId,
+          deploymentJobId: job.id,
+          jobType: input.type,
+        },
+        () =>
+          enqueueDeploymentJob({
+            deploymentJobId: job.id,
+            deploymentId: input.deploymentId,
+            type: input.type,
+          })
+      )
 
-  await logToDeployment({
-    deploymentId: input.deploymentId,
-    jobId: job.id,
-    message: "Job added to Redis Cloud queue",
-  })
+      if (!published.ok) {
+        // Redis queue is not available: fallback to in-process execution runner.
+        const queued = await prisma.deploymentJob.update({
+          where: { id: job.id },
+          data: { status: "QUEUED", errorMessage: null },
+        })
 
-  return { ok: true, job: queued }
+        await logDeploymentStep({
+          deploymentId: input.deploymentId,
+          jobId: job.id,
+          step: "deployment.redis.queued",
+          status: "failed",
+          message:
+            "Redis queue unavailable — executing job in backend process runner",
+          errorCode: "REDIS_QUEUE_UNAVAILABLE",
+          attrs: { deploymentJobId: job.id, jobType: input.type },
+        })
+
+        // Import lazily to avoid circular dependency
+        import("../workers/deployment.worker").then(({ executeJobDirectly }) => {
+          setImmediate(() => {
+            void executeJobDirectly(job.id)
+          })
+        }).catch(() => {})
+
+        return { ok: true, job: queued }
+      }
+
+      const queued = await prisma.deploymentJob.update({
+        where: { id: job.id },
+        data: { status: "QUEUED", errorMessage: null },
+      })
+
+      redisQueueJobTotal.add(1, { jobType: input.type })
+      await logDeploymentStep({
+        deploymentId: input.deploymentId,
+        jobId: job.id,
+        step: "deployment.redis.queued",
+        status: "success",
+        message: "Job added to Redis Cloud queue",
+        attrs: { deploymentJobId: job.id, jobType: input.type },
+      })
+
+      return { ok: true, job: queued }
+    }
+  )
 }
 
 export async function markJobRunning(

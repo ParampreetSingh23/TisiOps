@@ -1,0 +1,43 @@
+receivers:
+  filelog/tisiops:
+    include:
+      - /logs/tisiops-dev.log
+    start_at: beginning
+    include_file_name: true
+    include_file_path: true
+    operators:
+      - type: json_parser
+        if: body matches "^\\{"
+        parse_from: body
+        parse_to: attributes
+        on_error: send
+      - type: move
+        if: attributes.message != nil
+        from: attributes.message
+        to: body
+
+processors:
+  resource/tisiops:
+    attributes:
+      - key: service.name
+        value: tisiops-local
+        action: upsert
+      - key: deployment.environment
+        value: local
+        action: upsert
+  batch:
+
+exporters:
+  otlphttp/signoz:
+    endpoint: http://host.docker.internal:4318
+
+service:
+  pipelines:
+    logs:
+      receivers:
+        - filelog/tisiops
+      processors:
+        - resource/tisiops
+        - batch
+      exporters:
+        - otlphttp/signoz

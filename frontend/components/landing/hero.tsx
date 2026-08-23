@@ -10,11 +10,7 @@ export function Hero() {
 
       <div className="relative mx-auto grid w-full max-w-[1400px] items-center gap-14 px-5 pt-20 pb-24 sm:px-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,520px)] lg:gap-20 lg:px-14 lg:pt-32 lg:pb-32">
         <div className="max-w-[640px]">
-          <span className="inline-flex items-center rounded-[4px] border border-brand/30 bg-brand-soft px-3 py-1.5 text-sm font-semibold tracking-[-0.01em] text-brand">
-            AI DevOps Engineer
-          </span>
-
-          <h1 className="mt-7 font-heading text-[clamp(2.5rem,5.2vw,4.25rem)] leading-[1.12] font-medium tracking-[-0.04em] text-balance text-ink">
+          <h1 className="font-heading text-[clamp(2.5rem,5.2vw,4.25rem)] leading-[1.12] font-medium tracking-[-0.04em] text-balance text-ink">
             Deploy apps using natural language.
           </h1>
 

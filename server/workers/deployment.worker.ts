@@ -45,6 +45,7 @@ import { terraformDestroyHandler } from "./handlers/terraformDestroy.handler"
 import { vercelDeleteHandler } from "./handlers/vercelDelete.handler"
 import { vercelDeploymentHandler } from "./handlers/vercelDeployment.handler"
 import type { Handler } from "./handlers/types"
+import { startMonitoringWorker } from "./monitoring.worker"
 
 initOpenTelemetry()
 
@@ -407,9 +408,12 @@ async function main(): Promise<void> {
   const running = await startDeploymentWorker()
   if (!running) process.exit(1)
 
+  const monitoringWorker = await startMonitoringWorker()
+
   const stop = async (signal: string) => {
     log(`${signal} received — finishing the current job, then exiting`)
     await running.stop()
+    await monitoringWorker?.stop()
     await shutdownOpenTelemetry()
     await prisma.$disconnect()
     process.exit(0)

@@ -439,18 +439,40 @@ export async function runN8nDeployment(
     status: "READY" as const,
   }
 
-  if (existing) {
-    await prisma.server.update({ where: { id: existing.id }, data: serverData })
-  } else {
-    await prisma.server.create({
-      data: {
-        ...serverData,
-        userId: deployment.userId,
-        deploymentId,
-        provider: "TISIOPS_MANAGED_AWS",
-      },
-    })
-  }
+  const savedServer = existing
+    ? await prisma.server.update({
+        where: { id: existing.id },
+        data: { ...serverData, credentialsStored: true },
+        select: { id: true },
+      })
+    : await prisma.server.create({
+        data: {
+          ...serverData,
+          userId: deployment.userId,
+          deploymentId,
+          provider: "TISIOPS_MANAGED_AWS",
+          credentialsStored: true,
+        },
+        select: { id: true },
+      })
+
+  await prisma.serverCredential.upsert({
+    where: { serverId: savedServer.id },
+    create: {
+      serverId: savedServer.id,
+      userId: deployment.userId,
+      authType: "key",
+      encryptedPrivateKey: encryptSecret(key.privateKey),
+      encryptedPassword: null,
+      encryptedPassphrase: null,
+    },
+    update: {
+      authType: "key",
+      encryptedPrivateKey: encryptSecret(key.privateKey),
+      encryptedPassword: null,
+      encryptedPassphrase: null,
+    },
+  })
 
   await setStatus(
     deploymentId,

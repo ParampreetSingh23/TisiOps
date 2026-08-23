@@ -279,18 +279,40 @@ export async function runPostgresDeployment(
     status: "READY" as const,
   }
 
-  if (existingServer) {
-    await prisma.server.update({ where: { id: existingServer.id }, data: serverData })
-  } else {
-    await prisma.server.create({
-      data: {
-        userId: deployment.userId,
-        deploymentId,
-        provider: "TISIOPS_MANAGED_AWS",
-        ...serverData,
-      },
-    })
-  }
+  const savedServer = existingServer
+    ? await prisma.server.update({
+        where: { id: existingServer.id },
+        data: { ...serverData, credentialsStored: true },
+        select: { id: true },
+      })
+    : await prisma.server.create({
+        data: {
+          userId: deployment.userId,
+          deploymentId,
+          provider: "TISIOPS_MANAGED_AWS",
+          ...serverData,
+          credentialsStored: true,
+        },
+        select: { id: true },
+      })
+
+  await prisma.serverCredential.upsert({
+    where: { serverId: savedServer.id },
+    create: {
+      serverId: savedServer.id,
+      userId: deployment.userId,
+      authType: "key",
+      encryptedPrivateKey: encryptSecret(key.privateKey),
+      encryptedPassword: null,
+      encryptedPassphrase: null,
+    },
+    update: {
+      authType: "key",
+      encryptedPrivateKey: encryptSecret(key.privateKey),
+      encryptedPassword: null,
+      encryptedPassphrase: null,
+    },
+  })
 
   const url = databaseUrl({
     user: config.databaseUser,

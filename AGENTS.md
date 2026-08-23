@@ -4,6 +4,19 @@
 
 **TisiOps**
 
+## Mandatory Skill Usage
+
+For every TisiOps task, first read the project context files and load the required skills: `ponytail`, `caveman`, and `frontend-design`. Use `ponytail` for structured execution, `caveman` for preserving compressed project context and constraints, and `frontend-design` for any frontend, UI, dashboard, component, spacing, layout, or visual polish work. These skills must be applied before coding so the implementation stays consistent with TisiOps architecture, safety rules, and design system.
+At the beginning of every new session, DO NOT explore the repository.
+
+You must first read ONLY these files:
+
+1. AGENTS.md
+2. architecture.md
+3. CONTEXT.md
+4. DESIGN.md
+
+
 ## App Description
 
 TisiOps is an AI-powered DevOps Platform-as-a-Service that helps developers deploy, manage, monitor, debug, and optimize applications using natural language.

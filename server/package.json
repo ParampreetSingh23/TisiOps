@@ -40,7 +40,8 @@
     "./services/deployments/overview": "./services/deployments/overview.service.ts",
     "./services/templates": "./services/templates/template-registry.ts",
     "./services/templates/admin": "./services/templates/admin-templates.ts",
-    "./services/templates/builder": "./services/templates/template-builder.ts"
+    "./services/templates/builder": "./services/templates/template-builder.ts",
+    "./services/admin/stats": "./services/admin/admin-stats.service.ts"
   },
   "scripts": {
     "dev": "tsx watch --env-file=.env index.ts",
@@ -66,7 +67,10 @@
     "check:templates": "tsx services/templates/templates.check.ts",
     "check:admin-templates": "tsx services/templates/admin-templates.check.ts",
     "check:template-builder": "tsx services/templates/template-builder.check.ts",
-    "check:server-status": "tsx services/servers/server-status.check.ts"
+    "check:server-status": "tsx services/servers/server-status.check.ts",
+    "check:monitoring": "tsx services/servers/monitoring-installer.check.ts",
+    "check:metrics": "tsx services/servers/metrics-collector.check.ts",
+    "check:monitoring-agent": "tsx services/agents/monitoring-health.check.ts"
   },
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.1106.0",

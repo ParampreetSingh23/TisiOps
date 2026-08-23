@@ -8,6 +8,7 @@ import {
 } from "./ai/limits"
 import { currentMinuteCount, recordMinuteHit } from "./ai/rateLimit"
 import { recordFailure, recordUsage, todaysUsage } from "./ai/usage.service"
+import { aiGatewayChat } from "./ai-gateway/ai-gateway.service"
 
 const MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
 
@@ -185,6 +186,20 @@ export async function askMistral(
   messages: ChatMessage[],
   caller: ModelCaller
 ): Promise<string> {
+  if (process.env.AI_GATEWAY_ENABLED === "true") {
+    const response = await aiGatewayChat({
+      userId: caller.userId,
+      isAdmin: caller.isAdmin,
+      source: "AI_CONSOLE",
+      modelCode: process.env.AI_GATEWAY_DEFAULT_MODEL ?? "gemini-flash",
+      messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
+      temperature: 0.3,
+      maxTokens: 1200,
+    })
+
+    return sanitizeReply(response.content)
+  }
+
   const apiKey = process.env.MISTRAL_API_KEY
 
   if (!apiKey) {

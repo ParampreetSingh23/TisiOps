@@ -9,6 +9,12 @@ export type SafeTelemetryAttrs = {
   jobType?: string | null
   workerId?: string | null
   errorCode?: string | null
+  serverId?: string | null
+  dockerStatus?: string | null
+  collectionStatus?: string | null
+  health?: string | null
+  intent?: string | null
+  freshness?: string | null
 }
 
 export type DeploymentTimelineEvent = {

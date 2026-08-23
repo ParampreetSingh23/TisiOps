@@ -1,7 +1,7 @@
 import { prisma } from "../../db/prisma"
 import {
   findInstanceByPublicIp,
-  instanceState,
+  instanceSnapshot,
   startInstance,
   stopInstance,
   type AwsCredentials,
@@ -11,6 +11,10 @@ import { decryptSecret, encryptSecret } from "../../utils/crypto"
 import { rebootServerOverSsh, shutdownServerOverSsh } from "./server-power"
 import { isPortOpen } from "./server-reachable"
 import {
+  decryptStoredServerCredentials,
+  syncDeploymentSshKeyToServerCredential,
+} from "./managed-server-credentials"
+import {
   mapAwsInstanceState,
   pauseBlockedReason,
   reconcileSshServerStatus,
@@ -18,6 +22,7 @@ import {
   statusAfterFailedSshCheck,
 } from "./server-status"
 import { testSshConnection } from "./ssh-diagnostic"
+import { getOrCreateServerMonitoring } from "./server-monitoring.service"
 
 export type CreateBYOSServerInput = {
   name?: string
@@ -179,6 +184,7 @@ export async function createBYOSServer(userId: string, input: CreateBYOSServerIn
       awsInstanceId: true,
       host: true,
       publicIp: true,
+      elasticIp: true,
       sshPort: true,
       sshUsername: true,
       osType: true,
@@ -196,20 +202,36 @@ export async function createBYOSServer(userId: string, input: CreateBYOSServerIn
     },
   })
 
+  // Every newly connected server starts with a NOT_INSTALLED monitoring row.
+  // This is best-effort: if it fails, the GET monitoring route recreates it
+  // lazily, so a monitoring hiccup must never fail the connect itself.
+  try {
+    await getOrCreateServerMonitoring(userId, server.id)
+  } catch {
+    // Lazy creation on the GET route covers it.
+  }
+
   return toSafeServer(server)
 }
 
 export async function checkServerHealth(userId: string, serverId: string) {
   let server = await prisma.server.findFirst({
     where: { id: serverId, userId },
-    include: { credentials: true },
+    include: {
+      credentials: true,
+      deployment: { select: { encryptedSshPrivateKey: true } },
+    },
   })
 
   if (!server) return null
 
   server = await syncChangingServerState(server)
 
-  if (server.awsInstanceId && server.region && server.status !== "CONNECTED") {
+  if (
+    server.awsInstanceId &&
+    server.region &&
+    (server.status === "STARTING" || server.status === "STOPPING")
+  ) {
     return toSafeServer(server)
   }
 
@@ -222,35 +244,28 @@ export async function checkServerHealth(userId: string, serverId: string) {
   let diskGb = server.diskGb
   let osVersion = server.osVersion
 
-  if (server.credentialsStored && server.credentials) {
-    let privateKey: string | undefined
-    let password: string | undefined
-    let passphrase: string | undefined
-
+  if (
+    (server.credentialsStored && server.credentials) ||
+    server.deployment?.encryptedSshPrivateKey
+  ) {
+    let credentials
     try {
-      const { decryptSecret } = await import("../../utils/crypto")
-      if (server.credentials.encryptedPrivateKey) {
-        privateKey = decryptSecret(server.credentials.encryptedPrivateKey)
-      }
-      if (server.credentials.encryptedPassword) {
-        password = decryptSecret(server.credentials.encryptedPassword)
-      }
-      if (server.credentials.encryptedPassphrase) {
-        passphrase = decryptSecret(server.credentials.encryptedPassphrase)
-      }
+      credentials =
+        (await syncDeploymentSshKeyToServerCredential(server)) ??
+        decryptStoredServerCredentials(server.credentials)
     } catch {
       // Key mismatch or missing
     }
 
-    if (privateKey || password) {
+    if (credentials?.privateKey || credentials?.password) {
       const diagRes = await testSshConnection({
-        host: server.host || server.publicIp || "",
+        host: serverAddress(server),
         sshPort: server.sshPort,
         sshUsername: server.sshUsername || "ubuntu",
-        authType: server.credentials.authType as "key" | "password",
-        privateKey,
-        password,
-        passphrase,
+        authType: credentials.authType,
+        privateKey: credentials.privateKey,
+        password: credentials.password,
+        passphrase: credentials.passphrase,
       })
 
       if (diagRes.ok && diagRes.details) {
@@ -349,8 +364,10 @@ type ServerWithProviderState = {
   sshPort?: number | null
 }
 
-/** The address an instance can be found by when TisiOps has no instance id. */
-function serverAddress(server: {
+/** The address an instance can be found by when TisiOps has no instance id.
+ *  Elastic IP first: for a managed-AWS server the auto-assigned publicIp goes
+ *  stale once the EIP is attached, and the EIP is the only stable address. */
+export function serverAddress(server: {
   elasticIp?: string | null
   publicIp?: string | null
   host?: string | null
@@ -413,7 +430,7 @@ async function syncSshServerState<T extends ServerWithProviderState>(
   // knows what it is, and this would cost a network round trip per page load.
   if (server.status !== "STARTING" && server.status !== "STOPPING") return server
 
-  const host = server.host || server.publicIp || server.elasticIp || ""
+  const host = serverAddress(server)
   const mappedStatus = reconcileSshServerStatus(
     server.status,
     await isPortOpen(host, server.sshPort ?? 22)
@@ -432,22 +449,40 @@ async function syncSshServerState<T extends ServerWithProviderState>(
 async function syncAwsServerState<T extends ServerWithProviderState>(server: T): Promise<T> {
   if (!server.awsInstanceId || !server.region) return server
 
-  const mappedStatus = mapAwsInstanceState(
-    await instanceState(
-      server.region,
-      server.awsInstanceId,
-      await awsCredentialsFor(server)
-    )
+  const snapshot = await instanceSnapshot(
+    server.region,
+    server.awsInstanceId,
+    await awsCredentialsFor(server)
   )
+  const mappedStatus = mapAwsInstanceState(snapshot?.state ?? null)
 
-  if (!mappedStatus || mappedStatus === server.status) return server
+  if (
+    !mappedStatus &&
+    !snapshot?.publicIp &&
+    !snapshot?.elasticIp
+  ) {
+    return server
+  }
+
+  const data = {
+    ...(mappedStatus && mappedStatus !== server.status ? { status: mappedStatus } : {}),
+    ...(snapshot?.publicIp && snapshot.publicIp !== server.publicIp ? { publicIp: snapshot.publicIp } : {}),
+    ...(snapshot?.elasticIp && snapshot.elasticIp !== server.elasticIp ? { elasticIp: snapshot.elasticIp } : {}),
+    lastCheckedAt: new Date(),
+  }
 
   const updated = await prisma.server.update({
     where: { id: server.id },
-    data: { status: mappedStatus, lastCheckedAt: new Date() },
+    data,
   })
 
-  return { ...server, status: updated.status, lastCheckedAt: updated.lastCheckedAt }
+  return {
+    ...server,
+    status: updated.status,
+    publicIp: updated.publicIp,
+    elasticIp: updated.elasticIp,
+    lastCheckedAt: updated.lastCheckedAt,
+  }
 }
 
 function toSafeServer<T extends SafeServerSource>(server: T) {
@@ -508,7 +543,7 @@ export async function pauseServer(userId: string, serverId: string) {
     if (!credentials.ok) return credentials
 
     const result = await shutdownServerOverSsh({
-      host: server.host || server.publicIp || "",
+      host: serverAddress(server),
       port: server.sshPort,
       username: server.sshUsername || "ubuntu",
       ...credentials.value,
@@ -638,7 +673,7 @@ export async function restartServer(userId: string, serverId: string) {
   if (!credentials.ok) return credentials
 
   const result = await rebootServerOverSsh({
-    host: server.host || server.publicIp || "",
+    host: serverAddress(server),
     port: server.sshPort,
     username: server.sshUsername || "ubuntu",
     ...credentials.value,

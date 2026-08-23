@@ -1,115 +1,159 @@
-import { SiDocker, SiN8n, SiVercel } from "@icons-pack/react-simple-icons"
-import { Server, Wrench } from "lucide-react"
+"use client"
 
-import { ProviderIcon } from "@/components/deployment/provider-icon"
 import {
-  Section,
-  SectionHeading,
-  SectionLead,
-} from "@/components/landing/section"
+  SiDocker,
+  SiN8n,
+  SiNextdotjs,
+  SiNginx,
+  SiNodedotjs,
+  SiPostgresql,
+  SiPython,
+  SiRedis,
+  SiSupabase,
+  SiUbuntu,
+  SiVercel,
+} from "@icons-pack/react-simple-icons"
+import { ArrowRight } from "lucide-react"
+import Link from "next/link"
 
-/**
- * The template grid.
- *
- * Badges are honest about what exists: only Vercel ships today, and saying so
- * is what makes the rest of the page credible. Brand marks come from the
- * simple-icons package already installed for the dashboard — AWS is not in
- * that set, so it reuses the mark ProviderIcon inlines.
- */
+import { Reveal } from "@/components/landing/reveal"
 
-type Status = "Available" | "In progress" | "Coming next" | "Planned" | "Agent"
-
-const BADGES: Record<Status, string> = {
-  Available: "border-[#cfe6dc] bg-[#f2f9f6] text-[#0f6b4f]",
-  "In progress": "border-brand/30 bg-brand-soft text-brand",
-  "Coming next": "border-line-warm bg-canvas text-ink-default",
-  Planned: "border-line bg-canvas text-ink-muted",
-  Agent: "border-line-warm bg-surface text-ink-default",
-}
-
-const TEMPLATES: {
-  name: string
-  body: string
-  status: Status
-  icon: React.ReactNode
-}[] = [
+const TEMPLATE_CARDS = [
   {
-    name: "Vercel Frontend",
-    body: "Deploy Next.js, React, Vite, Astro, and static frontends with correct build settings and preview URLs.",
-    status: "Available",
-    icon: <SiVercel className="size-5 text-ink-strong" />,
+    name: "n8n Automation",
+    category: "Workflow",
+    provider: "AWS EC2",
+    description: "Workflow automation runtime with persistent Postgres database and auto-configured SSL.",
+    icon: <SiN8n className="size-4" color="#EA4B71" />,
   },
   {
-    name: "AWS App Server",
-    body: "Create EC2 servers, security groups, Elastic IPs, and deploy apps using Terraform-backed workflows.",
-    status: "In progress",
-    icon: <ProviderIcon id="aws" />,
+    name: "PostgreSQL",
+    category: "Database",
+    provider: "AWS EC2",
+    description: "Dedicated Postgres instance with encrypted credentials, volume persistence, and backups.",
+    icon: <SiPostgresql className="size-4" color="#4169E1" />,
   },
   {
-    name: "n8n Managed Server",
-    body: "Launch n8n on a managed AWS server with Docker, Postgres, persistent storage, and health checks.",
-    status: "Coming next",
-    icon: <SiN8n className="size-5" color="#EA4B71" />,
+    name: "Redis Cache",
+    category: "In-Memory",
+    provider: "Docker",
+    description: "High-performance key-value cache with memory limits and authentication.",
+    icon: <SiRedis className="size-4" color="#DC382D" />,
+  },
+  {
+    name: "Supabase Backend",
+    category: "Full Backend",
+    provider: "Docker",
+    description: "Self-hosted Supabase with auth, storage, realtime engine, and Postgres database.",
+    icon: <SiSupabase className="size-4" color="#3ECF8E" />,
+  },
+  {
+    name: "Ubuntu Server",
+    category: "Compute",
+    provider: "BYOS / VPS",
+    description: "Clean Ubuntu 24.04 server with SSH hardening, Docker engine, and health monitoring.",
+    icon: <SiUbuntu className="size-4" color="#E95420" />,
+  },
+  {
+    name: "Next.js App",
+    category: "Frontend",
+    provider: "Vercel",
+    description: "Fullstack Next.js deployment with automated builds, preview URLs, and edge routing.",
+    icon: <SiNextdotjs className="size-4 text-ink-strong" />,
+  },
+  {
+    name: "Node.js API",
+    category: "Backend",
+    provider: "Docker / AWS",
+    description: "Express or Fastify service with environment variables, reverse proxy, and logging.",
+    icon: <SiNodedotjs className="size-4" color="#5FA04E" />,
   },
   {
     name: "Docker App",
-    body: "Deploy containerized apps with safe worker execution, logs, retries, and repair actions.",
-    status: "Planned",
-    icon: <SiDocker className="size-5" color="#2496ED" />,
+    category: "Container",
+    provider: "Custom VPS",
+    description: "Deploy any containerized application with automated health checks and restart policies.",
+    icon: <SiDocker className="size-4" color="#2496ED" />,
   },
   {
-    name: "Custom VPS",
-    body: "Use your own server and let TisiOps configure Docker, reverse proxy, SSL, and app runtime.",
-    status: "Planned",
-    icon: <Server className="size-5 text-ink-muted" aria-hidden />,
+    name: "Nginx Proxy",
+    category: "Networking",
+    provider: "Linux",
+    description: "Reverse proxy and load balancer with Let's Encrypt SSL certificate generation.",
+    icon: <SiNginx className="size-4" color="#009639" />,
   },
   {
-    name: "AI Repair Agent",
-    body: "Detect broken ports, missing Elastic IPs, failed builds, bad output folders, and unreachable apps.",
-    status: "Agent",
-    icon: <Wrench className="size-5 text-ink-muted" aria-hidden />,
+    name: "Python Service",
+    category: "Backend",
+    provider: "Docker",
+    description: "FastAPI or Flask backend with virtual environment, dependencies, and Uvicorn runtime.",
+    icon: <SiPython className="size-4" color="#3776AB" />,
+  },
+  {
+    name: "Vercel Frontend",
+    category: "Static / Edge",
+    provider: "Vercel API",
+    description: "React, Vite, Astro, or static applications deployed with instant worldwide CDN delivery.",
+    icon: <SiVercel className="size-4 text-ink-strong" />,
   },
 ]
 
 export function Templates() {
   return (
-    <Section className="border-t border-line bg-surface">
-      <div className="max-w-[720px]">
-        <SectionHeading>
-          Start with templates. Scale into full deployments.
-        </SectionHeading>
-        <SectionLead>
-          Choose a deployment template and TisiOps turns it into a safe,
-          reviewable plan before anything runs.
-        </SectionLead>
-      </div>
+    <section className="border-t border-line">
+      <div className="mx-auto w-full max-w-[1400px] px-5 py-20 sm:px-8 lg:px-14 lg:py-28">
+        <Reveal className="max-w-[760px]">
+          <h2 className="font-heading text-[clamp(2rem,3.4vw,3rem)] leading-[1.15] font-medium tracking-[-0.035em] text-balance text-ink-strong">
+            Deploy infrastructure templates in minutes
+          </h2>
+          <p className="mt-4 text-base leading-relaxed text-ink-muted sm:text-lg">
+            Start with production-ready services and let TisiOps handle
+            provisioning, configuration, monitoring, and repair.
+          </p>
+        </Reveal>
 
-      <ul className="mt-14 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {TEMPLATES.map((template) => (
-          <li
-            key={template.name}
-            className="flex flex-col rounded-[8px] border border-line bg-canvas p-6 transition-colors duration-150 ease-out hover:border-line-warm"
-          >
-            <div className="flex items-center gap-3">
-              <span className="flex size-10 shrink-0 items-center justify-center rounded-[6px] border border-line bg-surface">
-                {template.icon}
-              </span>
-              <span
-                className={`ml-auto rounded-[4px] border px-2 py-0.5 text-xs font-semibold ${BADGES[template.status]}`}
-              >
-                {template.status}
-              </span>
+        {/* 4-Column Compact Grid */}
+        <Reveal delay={0.15} className="mt-12 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {TEMPLATE_CARDS.map((card) => (
+            <div
+              key={card.name}
+              className="group flex flex-col justify-between rounded-[6px] border border-line bg-surface p-4 shadow-card transition-all duration-150 ease-out hover:border-line-warm hover:-translate-y-0.5"
+            >
+              <div>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex size-7 shrink-0 items-center justify-center rounded-[4px] border border-line bg-canvas">
+                    {card.icon}
+                  </div>
+                  <span className="font-mono text-[11px] text-ink-muted">
+                    {card.provider}
+                  </span>
+                </div>
+
+                <h3 className="mt-3 text-sm font-semibold tracking-[-0.01em] text-ink-strong group-hover:text-brand transition-colors">
+                  {card.name}
+                </h3>
+                <p className="mt-1 text-xs leading-relaxed text-ink-muted line-clamp-2">
+                  {card.description}
+                </p>
+              </div>
+
+              <div className="mt-4 flex items-center justify-between border-t border-line pt-2.5">
+                <span className="font-mono text-[10px] text-ink-muted">
+                  {card.category}
+                </span>
+
+                <Link
+                  href="/sign-up"
+                  className="inline-flex items-center gap-1 font-mono text-xs font-semibold text-brand hover:underline group/link"
+                >
+                  <span>Deploy</span>
+                  <ArrowRight className="size-3 transition-transform group-hover/link:translate-x-0.5" />
+                </Link>
+              </div>
             </div>
-
-            <h3 className="mt-5 text-base font-semibold tracking-[-0.01em] text-ink-strong">
-              {template.name}
-            </h3>
-            <p className="mt-2 text-sm leading-relaxed text-ink-muted">
-              {template.body}
-            </p>
-          </li>
-        ))}
-      </ul>
-    </Section>
+          ))}
+        </Reveal>
+      </div>
+    </section>
   )
 }

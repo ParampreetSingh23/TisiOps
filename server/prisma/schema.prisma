@@ -160,6 +160,27 @@ enum TerminalSessionStatus {
   FAILED
 }
 
+enum MonitoringStatus {
+  NOT_INSTALLED
+  INSTALLING
+  ACTIVE
+  FAILED
+  DISABLED
+  UPGRADING
+}
+
+enum ServerRepairStatus {
+  DRAFT
+  APPROVAL_REQUIRED
+  APPROVED
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+  PLANNED_NOT_IMPLEMENTED
+}
+
 enum HostingMode {
   TISIOPS_MANAGED
 }
@@ -247,11 +268,130 @@ model User {
   repairPlans      RepairPlan[]
   agentRuns        AgentRun[]
   servers          Server[]
+  serverMonitorings ServerMonitoring[]
+  serverMetricSnapshots ServerMetricSnapshot[]
+  serverRepairPlans ServerRepairPlan[]
   aiUsage          AiUsageDaily[]
+  apiKeys          UserApiKey[]
+  aiGatewayUsage   AiUsage[]
+  aiGatewayLogs    AiGatewayRequestLog[]
   templates        AdminTemplate[]
   terminalSessions TerminalSession[]
 
   @@index([email])
+}
+
+model AiProvider {
+  id            String   @id @default(cuid())
+  providerId    String   @unique
+  name          String
+  type          String
+  baseUrl       String?
+  apiKeyEnvName String?
+  isEnabled     Boolean  @default(true)
+  isSystem      Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  models AiModel[]
+
+  @@index([isEnabled])
+}
+
+model AiModel {
+  id                String   @id @default(cuid())
+  modelCode         String   @unique
+  displayName       String
+  providerId        String
+  providerModel     String
+  description       String?
+  contextWindow     Int?
+  inputPricePer1M   Decimal?
+  outputPricePer1M  Decimal?
+  currency          String   @default("USD")
+  isEnabled         Boolean  @default(true)
+  isPublic          Boolean  @default(true)
+  isDefault         Boolean  @default(false)
+  supportsStreaming Boolean  @default(false)
+  supportsJson      Boolean  @default(false)
+  supportsTools     Boolean  @default(false)
+  tags              Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  provider AiProvider @relation(fields: [providerId], references: [providerId])
+
+  @@index([providerId])
+  @@index([isEnabled, isPublic])
+}
+
+model UserApiKey {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  keyPrefix  String
+  keyHash    String    @unique
+  status     String    @default("ACTIVE")
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  usage AiUsage[]
+  logs  AiGatewayRequestLog[]
+
+  @@index([userId, createdAt])
+  @@index([status])
+}
+
+model AiUsage {
+  id            String   @id @default(cuid())
+  userId        String?
+  user          User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  apiKeyId      String?
+  apiKey        UserApiKey? @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  source        String
+  agentName     String?
+  modelCode     String
+  providerId    String
+  providerModel String
+  inputTokens   Int      @default(0)
+  outputTokens  Int      @default(0)
+  totalTokens   Int      @default(0)
+  estimatedCost Decimal?
+  currency      String   @default("USD")
+  status        String
+  errorCode     String?
+  requestId     String?
+  deploymentId  String?
+  sessionId     String?
+  createdAt     DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([apiKeyId, createdAt])
+  @@index([modelCode, createdAt])
+  @@index([providerId, createdAt])
+  @@index([status, createdAt])
+}
+
+model AiGatewayRequestLog {
+  id           String   @id @default(cuid())
+  userId       String?
+  user         User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  apiKeyId     String?
+  apiKey       UserApiKey? @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  requestId    String   @unique
+  modelCode    String
+  providerId   String
+  status       String
+  errorCode    String?
+  latencyMs    Int?
+  metadataJson Json?
+  createdAt    DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
 }
 
 model AdminTemplate {
@@ -443,6 +583,9 @@ model Server {
 
   credentials      ServerCredential?
   terminalSessions TerminalSession[]
+  serverMonitoring ServerMonitoring?
+  metricSnapshot   ServerMetricSnapshot?
+  repairPlans      ServerRepairPlan[]
 
   @@index([userId, createdAt])
   @@index([deploymentId])
@@ -481,6 +624,87 @@ model ServerCredential {
   updatedAt           DateTime @updatedAt
 
   @@index([userId])
+}
+
+/// Monitoring lifecycle state for one connected server. Phase 1 only stores
+/// and displays whether monitoring is installed — no install worker, metrics,
+/// or agent yet. A server gets exactly one row, which is why serverId is unique.
+model ServerMonitoring {
+  id      String          @id @default(cuid())
+  userId  String
+  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serverId String          @unique
+  server  Server          @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  status   MonitoringStatus @default(NOT_INSTALLED)
+  agentVersion String?
+  installPath  String?      @default("/opt/tisiops/monitoring")
+
+  installedAt     DateTime?
+  lastHeartbeatAt DateTime?
+  lastCheckedAt   DateTime?
+
+  errorCode    String?
+  errorMessage String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([userId, serverId])
+}
+
+/// One row per server: the latest collected monitoring snapshot. Collection
+/// upserts by serverId, so there is no unlimited history yet. Phase 5 only
+/// stores the normalized current values — never a raw Prometheus payload.
+model ServerMetricSnapshot {
+  id      String @id @default(cuid())
+  userId  String
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serverId String @unique
+  server  Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  cpuPercent           Float?
+  memoryPercent        Float?
+  diskPercent          Float?
+
+  dockerStatus         String?
+  containerCount       Int      @default(0)
+  unhealthyContainers  Int      @default(0)
+
+  lastHeartbeatAt DateTime?
+  collectedAt     DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([userId, serverId])
+}
+
+/// A safe, user-approved server repair plan. The Monitoring Agent flags an
+/// issue; this records what a fix would be, requires approval, and only the
+/// worker runs a fixed handler afterwards. Never stores commands or credentials.
+model ServerRepairPlan {
+  id         String            @id @default(cuid())
+  userId     String
+  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serverId   String
+  server     Server            @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  issueType       String
+  diagnosis       String
+  evidenceJson    Json
+  actionsJson     Json
+  riskLevel       String
+  approvalRequired Boolean       @default(true)
+  status          ServerRepairStatus @default(APPROVAL_REQUIRED)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, serverId, createdAt])
+  @@index([status])
 }
 
 /// What the user asked for, plus the secrets the worker generated for them.
@@ -612,6 +836,7 @@ model AiChatSession {
   activeBranch      String?
   activeServicePath String?
   activeDeploymentId String?
+  activeServerId     String?
   latestRepairPlanId String?
   latestFailurePoint String?
   latestRecommendedAction String?

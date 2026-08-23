@@ -23,12 +23,11 @@ export function Section({
   )
 }
 
-/** Small orange label. The one place a section is allowed to use the accent. */
 export function Eyebrow({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center rounded-[4px] border border-brand/30 bg-brand-soft px-3 py-1.5 text-sm font-semibold tracking-[-0.01em] text-brand">
+    <p className="text-xs font-semibold uppercase tracking-wider text-ink-muted">
       {children}
-    </span>
+    </p>
   )
 }
 

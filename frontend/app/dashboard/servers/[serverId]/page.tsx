@@ -3,6 +3,7 @@
 import {
   AlertCircle,
   ArrowLeft,
+  Key,
   Loader2,
   Pause,
   Power,
@@ -16,9 +17,15 @@ import { useParams, useRouter } from "next/navigation"
 import { useCallback, useEffect, useState } from "react"
 
 import { ConfirmModal } from "@/components/dashboard/confirm-modal"
+import { MonitoringStatusCard } from "@/components/dashboard/monitoring-status-card"
+import { SshCredentialsModal } from "@/components/dashboard/ssh-credentials-modal"
 import { apiFetch } from "@/lib/api"
 import { primaryButton, secondaryButton } from "@/lib/ui"
-import { formatStatus, StatusDot, type ServerRecord } from "../page"
+import {
+  formatStatus,
+  StatusDot,
+  type ServerRecord,
+} from "@/components/dashboard/servers-view"
 
 export default function ServerDetailPage() {
   const params = useParams()
@@ -35,6 +42,7 @@ export default function ServerDetailPage() {
   const [isDisconnecting, setIsDisconnecting] = useState(false)
   const [powerAction, setPowerAction] = useState<"pause" | "restart" | null>(null)
   const [prepareAlert, setPrepareAlert] = useState(false)
+  const [showCredentials, setShowCredentials] = useState(false)
 
   const loadServer = useCallback(async () => {
     try {
@@ -50,10 +58,29 @@ export default function ServerDetailPage() {
   }, [serverId])
 
   useEffect(() => {
-    if (serverId) {
-      loadServer()
-    }
+    if (!serverId) return
+    const t = setTimeout(() => void loadServer(), 0)
+    return () => clearTimeout(t)
   }, [serverId, loadServer])
+
+  // Automatically poll server state when in a transition state (STARTING, STOPPING, PROVISIONING, VERIFYING)
+  useEffect(() => {
+    if (!serverId) return
+    if (!server || !["STARTING", "STOPPING", "PROVISIONING", "VERIFYING"].includes(server.status)) {
+      return
+    }
+
+    const interval = setInterval(async () => {
+      try {
+        const data = await apiFetch<ServerRecord>(`/api/servers/${serverId}`)
+        setServer(data)
+      } catch {
+        // ignore polling error
+      }
+    }, 2500)
+
+    return () => clearInterval(interval)
+  }, [serverId, server?.status])
 
   const handleCheckHealth = async () => {
     setIsChecking(true)
@@ -66,6 +93,20 @@ export default function ServerDetailPage() {
       // Handled
     } finally {
       setIsChecking(false)
+    }
+  }
+
+  // After adding credentials: refresh the server record and run a health check
+  // so status flips to CONNECTED (enabling the terminal) and SSH is confirmed.
+  const handleCredentialsSaved = async () => {
+    await loadServer()
+    try {
+      const updated = await apiFetch<ServerRecord>(`/api/servers/${serverId}/check`, {
+        method: "POST",
+      })
+      setServer(updated)
+    } catch {
+      // SSH still not reachable — status stays non-CONNECTED.
     }
   }
 
@@ -121,7 +162,7 @@ export default function ServerDetailPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="space-y-6 max-w-[1400px]">
       {/* Back Button */}
       <Link
         href="/dashboard/servers"
@@ -132,7 +173,7 @@ export default function ServerDetailPage() {
       </Link>
 
       {/* Header */}
-      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-line pb-6">
+      <div className="flex flex-col gap-4 border-b border-line pb-6 lg:flex-row lg:items-center lg:justify-between">
         <div>
           <div className="flex items-center gap-3">
             <h1 className="font-heading text-2xl font-medium tracking-[-0.03em] text-ink-strong">
@@ -141,7 +182,7 @@ export default function ServerDetailPage() {
             <StatusDot status={server.status} />
           </div>
           <p className="mt-1 font-mono text-sm text-ink-muted">
-            {server.host || server.publicIp} (Port {server.sshPort})
+            {server.elasticIp || server.host || server.publicIp} (Port {server.sshPort})
           </p>
         </div>
 
@@ -149,69 +190,78 @@ export default function ServerDetailPage() {
           {server.status === "CONNECTED" && server.credentialsStored ? (
             <Link
               href={`/dashboard/servers/${server.id}/terminal`}
-              className={primaryButton}
+              className="inline-flex h-9 items-center gap-1.5 rounded-[6px] bg-brand px-3.5 text-xs font-semibold text-white shadow-xs transition-colors hover:bg-brand-hover active:bg-brand-active"
             >
-              <Terminal className="mr-2 size-4" />
-              Open SSH Terminal
+              <Terminal className="size-3.5" />
+              <span>Open SSH Terminal</span>
             </Link>
           ) : (
             <button
               disabled
-              className={primaryButton}
+              className="inline-flex h-9 items-center gap-1.5 rounded-[6px] bg-brand/50 px-3.5 text-xs font-semibold text-white cursor-not-allowed opacity-60"
               title="Server must be connected with stored SSH credentials."
             >
-              <Terminal className="mr-2 size-4" />
-              Open SSH Terminal
+              <Terminal className="size-3.5" />
+              <span>Open SSH Terminal</span>
             </button>
           )}
 
           <button
+            onClick={() => setShowCredentials(true)}
+            className="inline-flex h-9 items-center gap-1.5 rounded-[6px] border border-line-warm bg-surface px-3 text-xs font-medium text-ink-default hover:bg-canvas transition-colors"
+            title="Add or replace SSH credentials for this server"
+          >
+            <Key className="size-3.5 text-ink-muted" />
+            <span>Credentials</span>
+          </button>
+
+          <button
             onClick={handleCheckHealth}
             disabled={isChecking}
-            className={secondaryButton}
+            className="inline-flex h-9 items-center gap-1.5 rounded-[6px] border border-line-warm bg-surface px-3 text-xs font-medium text-ink-default hover:bg-canvas transition-colors disabled:opacity-50"
           >
-            <RefreshCw className={`mr-2 size-4 ${isChecking ? "animate-spin text-brand" : ""}`} />
-            Check Health
+            <RefreshCw className={`size-3.5 ${isChecking ? "animate-spin text-brand" : ""}`} />
+            <span>Check Health</span>
           </button>
 
           <button
             onClick={() => setPrepareAlert(true)}
-            className={secondaryButton}
+            className="inline-flex h-9 items-center gap-1.5 rounded-[6px] border border-line-warm bg-surface px-3 text-xs font-medium text-ink-default hover:bg-canvas transition-colors"
           >
-            <Wrench className="mr-2 size-4 text-ink-muted" />
-            Prepare Server
+            <Wrench className="size-3.5 text-ink-muted" />
+            <span>Prepare</span>
           </button>
 
           <button
             onClick={() => setShowConfirmPause(true)}
             disabled={!server.canPause || powerAction !== null}
-            className={secondaryButton}
+            className="inline-flex h-9 items-center gap-1.5 rounded-[6px] border border-line-warm bg-surface px-3 text-xs font-medium text-ink-default hover:bg-canvas transition-colors disabled:opacity-40"
             title={server.pauseBlockedReason ?? "Pause server"}
           >
-            <Pause className="mr-2 size-4 text-ink-muted" />
-            Pause
+            <Pause className="size-3.5 text-ink-muted" />
+            <span>Pause</span>
           </button>
 
           <button
             onClick={() => setShowConfirmRestart(true)}
             disabled={!server.canRestart || powerAction !== null}
-            className={secondaryButton}
+            className="inline-flex h-9 items-center gap-1.5 rounded-[6px] border border-line-warm bg-surface px-3 text-xs font-medium text-ink-default hover:bg-canvas transition-colors disabled:opacity-40"
             title={
               server.restartBlockedReason ??
               (server.status === "STOPPED" ? "Start server" : "Restart server")
             }
           >
-            <Power className="mr-2 size-4 text-ink-muted" />
-            {server.status === "STOPPED" ? "Start" : "Restart"}
+            <Power className="size-3.5 text-ink-muted" />
+            <span>{server.status === "STOPPED" ? "Start" : "Restart"}</span>
           </button>
 
           <button
             onClick={() => setShowConfirmDisconnect(true)}
             disabled={isDisconnecting}
-            className="inline-flex h-10 items-center justify-center rounded-[6px] border border-red-200 bg-red-50/50 px-4 text-sm font-medium text-red-700 hover:bg-red-100 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-400"
+            className="inline-flex h-9 items-center gap-1.5 rounded-[6px] border border-red-200 bg-red-50/50 px-3 text-xs font-medium text-red-700 hover:bg-red-100 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-400 transition-colors"
           >
-            <Trash2 className="mr-2 size-4" />
-            Disconnect
+            <Trash2 className="size-3.5" />
+            <span>Disconnect</span>
           </button>
         </div>
 
@@ -243,6 +293,45 @@ export default function ServerDetailPage() {
           </button>
         </div>
       )}
+
+      {/* In-transition Progress Card / Orange Progress Bar */}
+      {["STARTING", "STOPPING", "PROVISIONING", "VERIFYING"].includes(server.status) && (
+        <div className="rounded-[8px] border border-brand/30 bg-brand-soft/40 p-4 shadow-card space-y-3">
+          <div className="flex items-center justify-between text-xs">
+            <div className="flex items-center gap-2">
+              <Loader2 className="size-4 animate-spin text-brand" />
+              <span className="font-semibold text-brand">
+                {server.status === "STARTING"
+                  ? "Starting Server..."
+                  : server.status === "STOPPING"
+                  ? "Stopping Server..."
+                  : server.status === "PROVISIONING"
+                  ? "Provisioning Server Infrastructure..."
+                  : "Verifying SSH Connection..."}
+              </span>
+            </div>
+            <span className="font-mono text-[11px] text-brand font-medium">
+              Live status polling
+            </span>
+          </div>
+
+          {/* Orange Progress Bar */}
+          <div className="h-2 w-full overflow-hidden rounded-full bg-brand/15">
+            <div className="h-full w-full bg-brand animate-pulse rounded-full" />
+          </div>
+
+          <p className="text-xs text-ink-muted leading-relaxed">
+            {server.status === "STARTING"
+              ? `Powering on compute and initializing SSH daemon on port ${server.sshPort}. This page will automatically update once the server is connected.`
+              : server.status === "STOPPING"
+              ? "Gracefully stopping container workloads and powering down compute."
+              : "Connecting over SSH and verifying Docker & runtime health."}
+          </p>
+        </div>
+      )}
+
+      {/* Monitoring status (Phase 1: status only, no metrics/install yet) */}
+      <MonitoringStatusCard serverId={server.id} />
 
       {/* Details Grid */}
       <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
@@ -328,7 +417,7 @@ export default function ServerDetailPage() {
       <ConfirmModal
         open={showConfirmDisconnect}
         title="Disconnect server?"
-        description={`Are you sure you want to disconnect server "${server.name}" (${server.host || server.publicIp})? This action cannot be undone.`}
+        description={`Are you sure you want to disconnect server "${server.name}" (${server.elasticIp || server.host || server.publicIp})? This action cannot be undone.`}
         confirmText="Disconnect Server"
         cancelText="Cancel"
         variant="danger"
@@ -371,6 +460,14 @@ export default function ServerDetailPage() {
         onConfirm={() => void runPowerAction("restart")}
         onClose={() => setShowConfirmRestart(false)}
       />
+
+      {showCredentials ? (
+        <SshCredentialsModal
+          serverId={serverId}
+          onClose={() => setShowCredentials(false)}
+          onSaved={handleCredentialsSaved}
+        />
+      ) : null}
     </div>
   )
 }

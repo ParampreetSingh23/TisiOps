@@ -40,6 +40,16 @@ import {
   pauseServer,
   restartServer,
 } from "./services/servers/server.service"
+import { enableServerMonitoring, getOrCreateServerMonitoring } from "./services/servers/server-monitoring.service"
+import { getLatestServerMetrics } from "./services/servers/metrics-collector"
+import { runMonitoringInstall } from "./services/servers/monitoring-install.runner"
+import { encryptSecret } from "./utils/crypto"
+import { runServerMonitoringAgent } from "./services/agents/server-monitoring.agent"
+import { answerServerMonitoringQuestion } from "./services/agents/server-orchestrator.agent"
+import {
+  approveServerRepair,
+  pendingServerRepairForSession,
+} from "./services/servers/server-repair.service"
 import { attachTerminalGateway } from "./services/servers/terminal-gateway"
 import { createTerminalSession } from "./services/servers/terminal.service"
 import { testSshConnection } from "./services/servers/ssh-diagnostic"
@@ -68,9 +78,13 @@ import {
   type Action,
 } from "./services/deployments/lifecycle.service"
 import { queueCounts } from "./queues/deployment.queue"
+import { enqueueMonitoringInstall, removeServerMetricsSchedule } from "./queues/monitoring.queue"
 import { platformUsageToday, usageSummary } from "./services/ai/usage.service"
 import { demoUsageToday, runDemoPrompt } from "./services/ai/demo.service"
+import { attachAiGatewayRoutes } from "./services/ai-gateway/ai-gateway.router"
+import { seedAiGatewayDefaults } from "./services/ai-gateway/ai-gateway.service"
 import { startDeploymentWorker } from "./workers/deployment.worker"
+import { startMonitoringWorker } from "./workers/monitoring.worker"
 import {
   detectDrift,
   explainInspection,
@@ -89,6 +103,7 @@ import {
   classifyIntent,
   diagnoseRepair,
   isAccountMemoryQuestion,
+  isServerMonitoringIntent,
   repairTargetMessageWhenMissing,
   TISIOPS_SCOPE_MESSAGE,
 } from "./services/agents/agent-router"
@@ -283,6 +298,18 @@ function isDeploymentServerLookupIntent(intent: AgentIntent): boolean {
     "GET_DEPLOYMENT_STATUS",
     "GET_SERVER_STATUS",
   ].includes(intent)
+}
+
+/** A server-health / monitoring question, distinct from a deployment one. */
+function isServerHealthQuestion(text: string): boolean {
+  const t = text.toLowerCase()
+  const mentionsServer = /\b(server|host|machine)\b/.test(t)
+  const mentionsMetric = /\b(cpu|memory|ram|disk|docker|container|unhealthy|heartbeat|health|healthy|slow|slowly|responding|respond|status|running|stopped)\b/.test(t)
+  return (
+    (mentionsServer && mentionsMetric) ||
+    /\bwhy is (my|the|this) (server|app|service)\b/.test(t) ||
+    /\bwhich container is unhealthy\b/.test(t)
+  )
 }
 
 function formatWhen(date: Date): string {
@@ -547,6 +574,189 @@ app.get("/api/servers/:id", async (req, res) => {
   res.json({ success: true, data: server })
 })
 
+app.get("/api/servers/:id/monitoring", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const monitoring = await getOrCreateServerMonitoring(
+    user.id,
+    String(req.params.id)
+  )
+  if (!monitoring) {
+    res.status(404).json({ success: false, error: "Server not found" })
+    return
+  }
+
+  res.json({
+    success: true,
+    data: {
+      serverId: monitoring.serverId,
+      status: monitoring.status,
+      agentVersion: monitoring.agentVersion,
+      installPath: monitoring.installPath,
+      installedAt: monitoring.installedAt,
+      lastHeartbeatAt: monitoring.lastHeartbeatAt,
+      lastCheckedAt: monitoring.lastCheckedAt,
+      errorCode: monitoring.errorCode,
+      errorMessage: monitoring.errorMessage,
+    },
+  })
+})
+
+app.get("/api/servers/:id/metrics/latest", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const result = await getLatestServerMetrics(user.id, String(req.params.id))
+  if (!result.ok) {
+    res.status(404).json({ success: false, error: "Server not found" })
+    return
+  }
+
+  res.json({ success: true, data: result.metrics })
+})
+
+app.post("/api/servers/:id/monitoring/ask", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const question = typeof req.body?.question === "string" ? req.body.question.trim() : ""
+  if (!question) {
+    res.status(400).json({ success: false, error: "Question is required" })
+    return
+  }
+
+  const result = await runServerMonitoringAgent({
+    userId: user.id,
+    serverId: String(req.params.id),
+    question,
+    isAdmin: callerIsAdmin(user),
+  })
+  if (!result.ok) {
+    res.status(result.status).json({ success: false, error: result.error })
+    return
+  }
+
+  res.json({ success: true, data: result.answer })
+})
+
+app.post("/api/servers/:id/repairs/:repairPlanId/approve", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const result = await approveServerRepair(user.id, String(req.params.repairPlanId))
+  if (!result.ok) {
+    res.status(result.status).json({ success: false, error: result.error })
+    return
+  }
+
+  res.json({ success: true, data: result })
+})
+
+app.put("/api/servers/:id/credentials", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const server = await prisma.server.findFirst({
+    where: { id: String(req.params.id), userId: user.id },
+    select: { id: true },
+  })
+  if (!server) {
+    res.status(404).json({ success: false, error: "Server not found" })
+    return
+  }
+
+  const body = req.body ?? {}
+  const authType = body.authType === "password" ? "password" : "key"
+  const privateKey = typeof body.privateKey === "string" ? body.privateKey.trim() : ""
+  const password = typeof body.password === "string" ? body.password : ""
+  const passphrase = typeof body.passphrase === "string" ? body.passphrase : ""
+
+  if (authType === "key" && !privateKey) {
+    res.status(400).json({ success: false, error: "SSH private key is required." })
+    return
+  }
+  if (authType === "password" && !password) {
+    res.status(400).json({ success: false, error: "SSH password is required." })
+    return
+  }
+
+  let encryptedPrivateKey: string | null = null
+  let encryptedPassword: string | null = null
+  let encryptedPassphrase: string | null = null
+  try {
+    if (authType === "key" && privateKey) encryptedPrivateKey = encryptSecret(privateKey)
+    if (authType === "password" && password) encryptedPassword = encryptSecret(password)
+    if (passphrase) encryptedPassphrase = encryptSecret(passphrase)
+  } catch {
+    res.status(500).json({ success: false, error: "Could not encrypt SSH credentials." })
+    return
+  }
+
+  await prisma.serverCredential.upsert({
+    where: { serverId: server.id },
+    create: {
+      serverId: server.id,
+      userId: user.id,
+      authType,
+      encryptedPrivateKey,
+      encryptedPassword,
+      encryptedPassphrase,
+    },
+    update: { authType, encryptedPrivateKey, encryptedPassword, encryptedPassphrase },
+  })
+  await prisma.server.update({
+    where: { id: server.id },
+    data: { credentialsStored: true },
+  })
+
+  res.json({ success: true, data: { status: "saved" } })
+})
+
+app.post("/api/servers/:id/monitoring/enable", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const result = await enableServerMonitoring(user.id, String(req.params.id))
+  if (!result.ok) {
+    res.status("status" in result ? result.status : 404).json({
+      success: false,
+      error: "error" in result ? result.error : "Server not found",
+    })
+    return
+  }
+
+  if (result.transitioned) {
+    const enqueued = await enqueueMonitoringInstall(
+      result.record.serverId,
+      result.record.id
+    )
+    if (!enqueued.ok) {
+      // Queue unavailable: run the install in-process so a Monitor click still
+      // proceeds. Status is already INSTALLING; the runner leaves it INSTALLING
+      // until the install succeeds or fails, never reverting to NOT_INSTALLED.
+      setImmediate(() => {
+        void runMonitoringInstall(result.record.serverId, result.record.id).catch(() => {})
+      })
+    }
+  }
+
+  res.json({
+    success: true,
+    data: {
+      serverId: result.record.serverId,
+      status: result.record.status,
+      agentVersion: result.record.agentVersion,
+      installPath: result.record.installPath,
+      installedAt: result.record.installedAt,
+      lastHeartbeatAt: result.record.lastHeartbeatAt,
+      lastCheckedAt: result.record.lastCheckedAt,
+      errorCode: result.record.errorCode,
+      errorMessage: result.record.errorMessage,
+    },
+  })
+})
+
 app.post("/api/servers/test-connection", async (req, res) => {
   const user = await requireDbUser(req, res)
   if (!user) return
@@ -595,6 +805,8 @@ app.delete("/api/servers/:id", async (req, res) => {
     res.status(404).json({ success: false, error: "Server not found" })
     return
   }
+
+  await removeServerMetricsSchedule(String(req.params.id))
 
   res.json({ success: true, data: { status: "disconnected" } })
 })
@@ -960,6 +1172,31 @@ app.post("/api/chat/sessions/:id/messages", async (req, res) => {
       return
     }
 
+    const pendingServer = await pendingServerRepairForSession(user.id, sessionId)
+    if (pendingServer) {
+      const result = await approveServerRepair(user.id, pendingServer.id)
+      const replyMessage = result.ok
+        ? "Approved. I queued the server repair job.\n\nTrack it in the server's monitoring page."
+        : `Could not queue repair: ${result.error}`
+
+      await appendTurn({
+        userId: user.id,
+        sessionId,
+        userContent: content,
+        assistantContent: replyMessage,
+      })
+
+      res.json({
+        success: true,
+        data: {
+          type: "answer",
+          intent: "REPAIR_SERVER",
+          message: replyMessage,
+        },
+      })
+      return
+    }
+
     if (missingRepairTargetMessage) {
       const replyMessage = missingRepairTargetMessage
 
@@ -1090,6 +1327,41 @@ app.post("/api/chat/sessions/:id/messages", async (req, res) => {
   }
 
   try {
+    // A server-health or monitoring question is answered by the Monitoring
+    // Orchestrator, which gathers evidence, may enrich with logs, and flags a
+    // repair plan — it never executes anything.
+    if (isServerMonitoringIntent(agentIntent) || isServerHealthQuestion(content)) {
+      const result = await answerServerMonitoringQuestion({
+        userId: user.id,
+        sessionId,
+        question: content,
+        isAdmin: callerIsAdmin(user),
+      })
+
+      await appendTurn({
+        userId: user.id,
+        sessionId,
+        userContent: content,
+        assistantContent: result.message,
+      })
+
+      res.json({
+        success: true,
+        data: {
+          type: result.type,
+          intent: result.intent,
+          serverId: result.serverId,
+          health: result.health,
+          message: result.message,
+          needsRepairAgent: result.needsRepairAgent,
+          repairPlanId: result.repairPlanId,
+          needsApproval: result.needsApproval,
+          repairActions: result.repairActions,
+        },
+      })
+      return
+    }
+
     // A deployment request is answered by the flow, not the model: the console
     // must plan and ask for approval, never deploy straight from a message.
     // The console renders the guided flow itself and fetches its own state
@@ -2160,6 +2432,8 @@ app.get("/api/admin/observability", async (req, res) => {
   })
 })
 
+attachAiGatewayRoutes(app, { requireDbUser, callerIsAdmin })
+
 /**
  * The deployment worker runs in this process unless told otherwise.
  *
@@ -2175,6 +2449,11 @@ const runWorkerInApi = process.env.RUN_WORKER_IN_API !== "false"
 
 const server = app.listen(PORT, async () => {
   console.log(`TisiOps API on http://localhost:${PORT} (CORS: ${FRONTEND_URL})`)
+  await seedAiGatewayDefaults().catch((error) => {
+    appLog("warn", "ai_gateway.seed.failed", {
+      error: error instanceof Error ? error.message : "unknown",
+    })
+  })
 
   if (!runWorkerInApi) {
     console.log("Deployment worker disabled here — run `npm run worker`.")
@@ -2192,12 +2471,20 @@ const server = app.listen(PORT, async () => {
 
   console.log("Deployment worker running in this process.")
 
+  const monitoringWorker = await startMonitoringWorker()
+  if (!monitoringWorker) {
+    console.log("Monitoring worker not started — monitoring will stay INSTALLING.")
+  } else {
+    console.log("Monitoring worker running in this process.")
+  }
+
   // The in-flight job finishes before the process exits. Killing a Terraform
   // apply midway is what leaves an EC2 instance nobody has a record of.
   const stop = async (signal: string) => {
     console.log(`${signal} received — finishing the current deployment job`)
     server.close()
     await worker.stop()
+    await monitoringWorker?.stop()
     await shutdownOpenTelemetry()
     process.exit(0)
   }

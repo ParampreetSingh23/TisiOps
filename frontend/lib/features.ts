@@ -11,6 +11,7 @@ export type FeatureKey =
   | "deployments"
   | "servers"
   | "ai-console"
+  | "ai-gateway"
   | "logs"
   | "settings"
   | "templates"
@@ -54,6 +55,12 @@ export const FEATURE_DEFAULTS: Feature[] = [
     key: "ai-console",
     name: "AI Console",
     description: "Natural language control of the platform.",
+    status: "enabled",
+  },
+  {
+    key: "ai-gateway",
+    name: "AI Gateway",
+    description: "Unified LLM proxy, rate limits, API keys, and model routing.",
     status: "enabled",
   },
   {

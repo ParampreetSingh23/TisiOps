@@ -3,10 +3,14 @@ import assert from "node:assert/strict"
 import {
   classifyIntent,
   isAccountMemoryQuestion,
+  isServerMonitoringIntent,
   MISSING_REPAIR_TARGET_MESSAGE,
   repairTargetMessageWhenMissing,
 } from "./orchestrator.agent"
+import { runServerMonitoringAgent } from "./server-monitoring.agent"
+import { selectServerMessage } from "./server-orchestrator.agent"
 import { isAiSystemLog } from "./logs.agent"
+import { sanitizeReply } from "../ai/reply"
 import {
   explainInspection,
   generateRetryPlan,
@@ -16,6 +20,13 @@ import type { TerraformInspection } from "../terraform/terraformInspection"
 assert.equal(classifyIntent("best places to visit in Delhi to eat"), "OUT_OF_SCOPE")
 assert.equal(classifyIntent("Delhi is also a server platform"), "OUT_OF_SCOPE")
 assert.equal(classifyIntent("show my deployments"), "LIST_DEPLOYMENTS")
+
+assert.equal(classifyIntent("CHECK MONITORING OF MY SERVER"), "CHECK_MONITORING_STATUS")
+assert.equal(isServerMonitoringIntent(classifyIntent("CHECK MONITORING OF MY SERVER")), true)
+assert.equal(classifyIntent("WHAT IS CPU LOAD"), "CHECK_CPU_USAGE")
+assert.equal(isServerMonitoringIntent(classifyIntent("WHAT IS CPU LOAD")), true)
+assert.equal(classifyIntent("what about cpu?"), "CHECK_CPU_USAGE")
+assert.equal(isServerMonitoringIntent(classifyIntent("what about cpu?")), true)
 
 assert.equal(classifyIntent("what is my name"), "GENERAL_TISIOPS_HELP")
 assert.equal(isAccountMemoryQuestion("what is my name"), true)
@@ -62,5 +73,79 @@ const inspection: TerraformInspection = {
 const userFacing = [explainInspection(inspection), ...generateRetryPlan(inspection).steps].join("\n")
 assert.equal(userFacing.includes("terraform/aws-n8n-server/dep_123/terraform.tfstate"), false)
 assert.equal(userFacing.includes("/Users/pampi/Workstation"), false)
+
+const now = new Date().toISOString()
+const activeNoSnapshot = await runServerMonitoringAgent({
+  userId: "user_1",
+  serverId: "srv_1",
+  question: "check monitoring of my server",
+  isAdmin: false,
+  context: {
+    serverId: "srv_1",
+    serverName: "prod",
+    monitoringStatus: "ACTIVE",
+    freshness: "UNAVAILABLE",
+    metrics: { cpuPercent: null, memoryPercent: null, diskPercent: null },
+    docker: { status: null, containerCount: 0, unhealthyContainers: 0 },
+    lastHeartbeatAt: null,
+    lastCheckedAt: null,
+    collectedAt: null,
+    healthChecks: [],
+    recentLogs: [],
+  },
+})
+assert.equal(activeNoSnapshot.ok, true)
+assert.match(
+  activeNoSnapshot.ok ? activeNoSnapshot.answer.answer : "",
+  /Monitoring is active, but no metric snapshot has been collected yet\./
+)
+assert.doesNotMatch(activeNoSnapshot.ok ? activeNoSnapshot.answer.answer : "", /CPU.*0%|Terraform/i)
+
+const cpuAnswer = await runServerMonitoringAgent({
+  userId: "user_1",
+  serverId: "srv_1",
+  question: "what is cpu load",
+  isAdmin: false,
+  context: {
+    serverId: "srv_1",
+    serverName: "prod",
+    monitoringStatus: "ACTIVE",
+    freshness: "FRESH",
+    metrics: { cpuPercent: 73, memoryPercent: 61, diskPercent: 48 },
+    docker: { status: "RUNNING", containerCount: 5, unhealthyContainers: 0 },
+    lastHeartbeatAt: now,
+    lastCheckedAt: now,
+    collectedAt: now,
+    healthChecks: [],
+    recentLogs: [],
+  },
+})
+assert.equal(cpuAnswer.ok, true)
+assert.match(cpuAnswer.ok ? cpuAnswer.answer.answer : "", /CPU usage: 73%/)
+assert.equal(cpuAnswer.ok ? cpuAnswer.answer.intent : null, "CHECK_CPU_USAGE")
+
+const staleCpuAnswer = await runServerMonitoringAgent({
+  userId: "user_1",
+  serverId: "srv_1",
+  question: "what is cpu load",
+  isAdmin: false,
+  context: {
+    serverId: "srv_1",
+    serverName: "prod",
+    monitoringStatus: "ACTIVE",
+    freshness: "STALE",
+    metrics: { cpuPercent: 73, memoryPercent: 61, diskPercent: 48 },
+    docker: { status: "RUNNING", containerCount: 5, unhealthyContainers: 0 },
+    lastHeartbeatAt: now,
+    lastCheckedAt: now,
+    collectedAt: new Date(Date.now() - 8 * 60_000).toISOString(),
+    healthChecks: [],
+    recentLogs: [],
+  },
+})
+assert.equal(staleCpuAnswer.ok, true)
+assert.match(staleCpuAnswer.ok ? staleCpuAnswer.answer.answer : "", /stale|Last known/i)
+assert.equal(sanitizeReply("svg\n\nAssistant message").includes("svg"), false)
+assert.equal(selectServerMessage(), "Which server would you like me to check?")
 
 console.log("agent routing checks passed")

@@ -42,7 +42,7 @@ export async function resolveAgentContext(input: {
 
   return {
     activeDeploymentId: deployment?.id ?? null,
-    activeServerId: null,
+    activeServerId: session?.activeServerId ?? null,
     activeTemplateId: deployment?.template ?? null,
     activeProvider: deployment?.provider ?? null,
     activeRepositoryOwner: deployment?.repositoryOwner ?? null,

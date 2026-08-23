@@ -15,7 +15,10 @@ import { useCallback, useEffect, useRef, useState } from "react"
 
 import { apiFetch } from "@/lib/api"
 import { primaryButton, secondaryButton } from "@/lib/ui"
-import { StatusDot, type ServerRecord } from "../../page"
+import {
+  StatusDot,
+  type ServerRecord,
+} from "@/components/dashboard/servers-view"
 
 type TerminalSessionResponse = {
   sessionId: string
@@ -230,7 +233,7 @@ export default function ServerTerminalPage() {
           <div className="mt-2 grid gap-2 text-xs text-ink-muted sm:grid-cols-3">
             <span className="inline-flex items-center gap-1.5 font-mono">
               <ServerIcon className="size-3.5" />
-              {server.host || server.publicIp}
+              {server.elasticIp || server.host || server.publicIp}
             </span>
             <span className="inline-flex items-center gap-1.5 font-mono">
               <Monitor className="size-3.5" />

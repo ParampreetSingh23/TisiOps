@@ -21,6 +21,12 @@ export function otelAttrs(input: SafeTelemetryAttrs = {}): Attributes {
       jobType: input.jobType,
       workerId: input.workerId,
       errorCode: input.errorCode,
+      serverId: input.serverId,
+      dockerStatus: input.dockerStatus,
+      collectionStatus: input.collectionStatus,
+      health: input.health,
+      intent: input.intent,
+      freshness: input.freshness,
     }).filter(([, value]) => value !== undefined && value !== null && value !== "")
   ) as Attributes
 }

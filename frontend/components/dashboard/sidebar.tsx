@@ -6,6 +6,7 @@ import {
   ExternalLink,
   FileText,
   LayoutDashboard,
+  Network,
   Rocket,
   Server,
   Settings,
@@ -71,6 +72,12 @@ const groups: { label: string; items: NavItem[] }[] = [
         feature: "ai-console",
       },
       {
+        href: "/dashboard/ai-gateway",
+        label: "AI Gateway",
+        icon: Network,
+        feature: "ai-gateway",
+      },
+      {
         href: "/dashboard/logs",
         label: "Logs",
         icon: FileText,
@@ -102,6 +109,7 @@ const adminGroup: { label: string; items: NavItem[] } = {
   label: "Admin",
   items: [
     { href: "/dashboard/admin", label: "Admin Panel", icon: ShieldCheck },
+    { href: "/dashboard/admin/ai-gateway", label: "AI Gateway", icon: Network },
     { href: "/dashboard/admin/templates", label: "Templates", icon: FileText },
     { href: "/dashboard/admin/observability", label: "Observability", icon: Waypoints },
   ],

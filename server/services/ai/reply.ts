@@ -62,6 +62,12 @@ export function stripPricing(text: string): string {
 }
 
 /** Everything a reply passes through before it reaches a user. */
+export function stripSvgArtifacts(text: string): string {
+  return text
+    .replace(/<svg[\s\S]*?<\/svg>/gi, "")
+    .replace(/^\s*(?:svg\s*)+$/gim, "")
+}
+
 export function sanitizeReply(text: string): string {
-  return stripPricing(stripEmoji(text)).trim()
+  return stripSvgArtifacts(stripPricing(stripEmoji(text))).trim()
 }

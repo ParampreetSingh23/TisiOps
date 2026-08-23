@@ -31,6 +31,12 @@ function client(region: string, credentials?: AwsCredentials): EC2Client {
 export type PowerResult =
   { ok: true; state: string } | { ok: false; error: string }
 
+export type InstanceSnapshot = {
+  state: string | null
+  publicIp: string | null
+  elasticIp: string | null
+}
+
 /**
  * Provider errors say too much and help too little, so they are classified
  * into something a user can act on — the same rule as Terraform failures.
@@ -98,12 +104,29 @@ export async function instanceState(
   instanceId: string,
   credentials?: AwsCredentials
 ): Promise<string | null> {
+  return (await instanceSnapshot(region, instanceId, credentials))?.state ?? null
+}
+
+/** Current lifecycle state and public addresses, or null when AWS no longer knows it. */
+export async function instanceSnapshot(
+  region: string,
+  instanceId: string,
+  credentials?: AwsCredentials
+): Promise<InstanceSnapshot | null> {
   try {
     const response = await client(region, credentials).send(
       new DescribeInstancesCommand({ InstanceIds: [instanceId] })
     )
+    const instance = response.Reservations?.[0]?.Instances?.[0]
 
-    return response.Reservations?.[0]?.Instances?.[0]?.State?.Name ?? null
+    return {
+      state: instance?.State?.Name ?? null,
+      publicIp: instance?.PublicIpAddress ?? null,
+      elasticIp:
+        instance?.NetworkInterfaces?.find((networkInterface) =>
+          Boolean(networkInterface.Association?.PublicIp)
+        )?.Association?.PublicIp ?? null,
+    }
   } catch {
     return null
   }

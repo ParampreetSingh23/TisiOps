@@ -1,7 +1,10 @@
 import { createHash, randomBytes } from "node:crypto"
 
 import { prisma } from "../../db/prisma"
-import { decryptSecret } from "../../utils/crypto"
+import {
+  decryptStoredServerCredentials,
+  syncDeploymentSshKeyToServerCredential,
+} from "./managed-server-credentials"
 
 const TOKEN_BYTES = 32
 const TOKEN_TTL_MS = 5 * 60_000
@@ -34,6 +37,7 @@ export async function createTerminalSession(
       status: true,
       credentialsStored: true,
       credentials: { select: { id: true } },
+      deployment: { select: { encryptedSshPrivateKey: true } },
     },
   })
 
@@ -45,7 +49,10 @@ export async function createTerminalSession(
       error: "Server must be connected before opening terminal.",
     }
   }
-  if (!server.credentialsStored || !server.credentials) {
+  if (
+    (!server.credentialsStored || !server.credentials) &&
+    !server.deployment?.encryptedSshPrivateKey
+  ) {
     return {
       ok: false as const,
       status: 409,
@@ -81,27 +88,27 @@ export async function consumeTerminalSession(sessionId: string, token: string) {
       status: { in: ["CONNECTING", "DISCONNECTED", "FAILED"] },
     },
     include: {
-      server: { include: { credentials: true } },
+      server: {
+        include: {
+          credentials: true,
+          deployment: { select: { encryptedSshPrivateKey: true } },
+        },
+      },
     },
   })
 
   if (!session) return null
   if (session.server.userId !== session.userId) return null
   if (session.server.status !== "CONNECTED") return null
-  if (!session.server.credentialsStored || !session.server.credentials) return null
 
-  const credential = session.server.credentials
-  const privateKey = credential.encryptedPrivateKey
-    ? decryptSecret(credential.encryptedPrivateKey)
-    : undefined
-  const password = credential.encryptedPassword
-    ? decryptSecret(credential.encryptedPassword)
-    : undefined
-  const passphrase = credential.encryptedPassphrase
-    ? decryptSecret(credential.encryptedPassphrase)
-    : undefined
+  let resolved = await syncDeploymentSshKeyToServerCredential(session.server).catch(
+    () => null
+  )
+  if (!resolved) {
+    resolved = decryptStoredServerCredentials(session.server.credentials)
+  }
 
-  if (!privateKey && !password) return null
+  if (!resolved?.privateKey && !resolved?.password) return null
 
   await prisma.terminalSession.update({
     where: { id: session.id },
@@ -117,12 +124,12 @@ export async function consumeTerminalSession(sessionId: string, token: string) {
     sessionId: session.id,
     userId: session.userId,
     server: {
-      host: session.server.host || session.server.publicIp || "",
+      host: session.server.elasticIp || session.server.publicIp || session.server.host || "",
       port: session.server.sshPort,
       username: session.server.sshUsername || "ubuntu",
-      privateKey,
-      password,
-      passphrase,
+      privateKey: resolved.privateKey,
+      password: resolved.password,
+      passphrase: resolved.passphrase,
     },
   }
 }

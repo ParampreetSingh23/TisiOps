@@ -37,6 +37,55 @@ const LAST_LOOKUP = /\b(last|latest|most recent|recent)\b/i
 const LIST_LOOKUP = /\b(show|list|view|see|display|get)\b/i
 const STATUS_LOOKUP = /\b(status|stopped|running|health|up|down|state)\b/i
 
+export function monitoringIntentFromText(text: string): AgentIntent | null {
+  const t = text.toLowerCase()
+
+  if (/\b(cpu|processor)\b/.test(t)) {
+    return /\b(why|high|pegged|diagnose)\b/.test(t)
+      ? "DIAGNOSE_HIGH_CPU"
+      : "CHECK_CPU_USAGE"
+  }
+  if (/\b(memory|ram)\b/.test(t)) {
+    return /\b(why|high|leak|diagnose)\b/.test(t)
+      ? "DIAGNOSE_HIGH_MEMORY"
+      : "CHECK_MEMORY_USAGE"
+  }
+  if (/\b(disk|storage|space)\b/.test(t)) {
+    return /\b(why|high|pressure|full|almost|diagnose)\b/.test(t)
+      ? "DIAGNOSE_DISK_PRESSURE"
+      : "CHECK_DISK_USAGE"
+  }
+  if (/\bdocker\b/.test(t)) return "CHECK_DOCKER_STATUS"
+  if (/\b(container|unhealthy|restarting)\b/.test(t)) return "CHECK_CONTAINER_HEALTH"
+  if (/\b(heartbeat|last monitored|last check|when.*monitor)\b/.test(t)) {
+    return "CHECK_LAST_HEARTBEAT"
+  }
+  if (/\b(slow|performance|lag|sluggish)\b/.test(t)) return "DIAGNOSE_SERVER_SLOWNESS"
+  if (/\b(monitoring?|metrics?)\b/.test(t)) return "CHECK_MONITORING_STATUS"
+  if (/\bserver\b/.test(t) && /\b(health|healthy)\b/.test(t)) return "CHECK_SERVER_HEALTH"
+
+  return null
+}
+
+export function isServerMonitoringIntent(intent: AgentIntent): boolean {
+  return [
+    "CHECK_MONITORING_STATUS",
+    "CHECK_SERVER_HEALTH",
+    "CHECK_CPU_USAGE",
+    "CHECK_MEMORY_USAGE",
+    "CHECK_DISK_USAGE",
+    "CHECK_DOCKER_STATUS",
+    "CHECK_CONTAINER_HEALTH",
+    "CHECK_LAST_HEARTBEAT",
+    "DIAGNOSE_SERVER_SLOWNESS",
+    "DIAGNOSE_HIGH_CPU",
+    "DIAGNOSE_HIGH_MEMORY",
+    "DIAGNOSE_DISK_PRESSURE",
+    "DIAGNOSE_CONTAINER_FAILURE",
+    "DIAGNOSE_APP_DOWN",
+  ].includes(intent)
+}
+
 export function isAccountMemoryQuestion(text: string): boolean {
   return /\bwhat(?:'s| is)\s+my\s+name\b|\bwho\s+am\s+i\b/i.test(text)
 }
@@ -65,6 +114,8 @@ function hasDevopsIntent(text: string): boolean {
 export function classifyIntent(text: string): AgentIntent {
   if (isAccountMemoryQuestion(text)) return "GENERAL_TISIOPS_HELP"
   if (isRepairApprovalText(text)) return "REPAIR_DEPLOYMENT"
+  const monitoringIntent = monitoringIntentFromText(text)
+  if (monitoringIntent) return monitoringIntent
   if (!hasDevopsIntent(text)) return "OUT_OF_SCOPE"
   if (/\b(why|diagnose|failed|failure|error)\b/i.test(text)) {
     return "DIAGNOSE_DEPLOYMENT"

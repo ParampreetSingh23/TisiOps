@@ -19,10 +19,15 @@ import {
   pauseBlockedReason,
   reconcileSshServerStatus,
   restartBlockedReason,
+  serverAddress,
   statusAfterFailedSshCheck,
+  usesPlatformAwsAccount,
 } from "./server-status"
 import { testSshConnection } from "./ssh-diagnostic"
 import { getOrCreateServerMonitoring } from "./server-monitoring.service"
+
+// Re-exported so the routes and the repair worker keep one import for servers.
+export { serverAddress }
 
 export type CreateBYOSServerInput = {
   name?: string
@@ -355,6 +360,7 @@ type ServerWithProviderState = {
   id: string
   userId?: string
   deploymentId?: string | null
+  provider?: string
   awsInstanceId?: string | null
   region?: string | null
   status: string
@@ -364,31 +370,24 @@ type ServerWithProviderState = {
   sshPort?: number | null
 }
 
-/** The address an instance can be found by when TisiOps has no instance id.
- *  Elastic IP first: for a managed-AWS server the auto-assigned publicIp goes
- *  stale once the EIP is attached, and the EIP is the only stable address. */
-export function serverAddress(server: {
-  elasticIp?: string | null
-  publicIp?: string | null
-  host?: string | null
-}): string {
-  return server.elasticIp || server.publicIp || server.host || ""
-}
-
 /**
  * Which AWS account this server lives in.
  *
- * A server TisiOps provisioned belongs to a deployment and sits in the TisiOps
- * account, whose keys are in the worker's environment. Anything else is the
- * user's own machine in the user's own account, and only their connection can
- * touch it — so returning undefined here is not a fallback, it is the answer
- * for TisiOps-managed servers.
+ * The provider decides, not whether a deployment made the server. Only
+ * TISIOPS_MANAGED_AWS sits in the TisiOps account, whose keys are in the
+ * worker's environment — returning undefined there is the answer, not a
+ * fallback. Everything else is in the user's own account and only their saved
+ * connection can see it, including a server TisiOps provisioned for them:
+ * asking the platform account about that instance id finds nothing, so start,
+ * stop and status would all fail on a server that is running.
  */
 async function awsCredentialsFor(server: {
   userId?: string
-  deploymentId?: string | null
+  provider?: string
 }): Promise<AwsCredentials | undefined> {
-  if (server.deploymentId || !server.userId) return undefined
+  if (usesPlatformAwsAccount(server.provider) || !server.userId) {
+    return undefined
+  }
   return (await readAwsCredentials(server.userId)) ?? undefined
 }
 
@@ -583,6 +582,7 @@ async function adoptInstance(server: {
   id: string
   userId: string
   deploymentId: string | null
+  provider: string
   awsInstanceId: string | null
   region: string | null
   elasticIp: string | null

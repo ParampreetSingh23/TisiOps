@@ -39,6 +39,7 @@ import {
   listUserServers,
   pauseServer,
   restartServer,
+  serverAddress,
 } from "./services/servers/server.service"
 import { enableServerMonitoring, getOrCreateServerMonitoring } from "./services/servers/server-monitoring.service"
 import { getLatestServerMetrics } from "./services/servers/metrics-collector"
@@ -109,7 +110,6 @@ import {
 } from "./services/agents/agent-router"
 import type { AgentIntent } from "./services/agents/agent.types"
 import { pendingRepairForSession } from "./services/agents/agent-memory"
-import { resolveAgentContext } from "./services/agents/agent-context"
 import { getDeploymentTelemetrySummary } from "./services/observability/deployment-spans"
 import { signozStatus } from "./services/observability/signoz"
 import { chatMessageSchema, chatSessionCreateSchema } from "./validations/chat"
@@ -121,6 +121,7 @@ import {
 import {
   analyzeRepositorySchema,
   approveDeploymentSchema,
+  awsServerSchema,
   n8nDeploymentSchema,
   postgresDeploymentSchema,
   terraformPlanSchema,
@@ -160,6 +161,19 @@ import {
   getPostgresConnection,
   retryManagedPostgresDeployment,
 } from "./services/postgres/index"
+import {
+  COST_WARNING as AWS_COST_WARNING,
+  PUBLIC_SERVER_WARNING as AWS_PUBLIC_SERVER_WARNING,
+  countActiveAwsServers,
+  createAwsServerDeployment,
+  getAwsServerProgress,
+  retryAwsServerDeployment,
+} from "./services/aws/index"
+import {
+  awsServerOptions,
+  awsServerPlan,
+  validateAwsServerConfig,
+} from "./services/aws/plans"
 import { getTemplateById } from "./services/templates/template-registry"
 import {
   ALLOWED_REGIONS,
@@ -317,14 +331,6 @@ function formatWhen(date: Date): string {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(date)
-}
-
-function serverAddress(server: {
-  publicIp: string | null
-  elasticIp: string | null
-  host: string | null
-}): string | null {
-  return server.publicIp ?? server.elasticIp ?? server.host ?? null
 }
 
 function deploymentName(deployment: {
@@ -1134,6 +1140,42 @@ app.post("/api/chat/sessions/:id/messages", async (req, res) => {
     return
   }
 
+  // Classify monitoring BEFORE any deployment/Terraform or approval routing.
+  // A server-health/monitoring question is answered by the Monitoring
+  // Orchestrator and must never fall through to Terraform or deployment context.
+  // Intent drives context here, not the other way around — see AGENTS.md.
+  if (isServerMonitoringIntent(agentIntent) || isServerHealthQuestion(content)) {
+    const result = await answerServerMonitoringQuestion({
+      userId: user.id,
+      sessionId,
+      question: content,
+      isAdmin: callerIsAdmin(user),
+    })
+
+    await appendTurn({
+      userId: user.id,
+      sessionId,
+      userContent: content,
+      assistantContent: result.message,
+    })
+
+    res.json({
+      success: true,
+      data: {
+        type: result.type,
+        intent: result.intent,
+        serverId: result.serverId,
+        health: result.health,
+        message: result.message,
+        needsRepairAgent: result.needsRepairAgent,
+        repairPlanId: result.repairPlanId,
+        needsApproval: result.needsApproval,
+        repairActions: result.repairActions,
+      },
+    })
+    return
+  }
+
   const isApprovalPhrase = /^\s*(yes|yep|yeah|sure|approve|approved|proceed|go ahead|start it|deploy it|start|do it|ok|okay)\s*$/i.test(
     content.trim()
   )
@@ -1327,46 +1369,10 @@ app.post("/api/chat/sessions/:id/messages", async (req, res) => {
   }
 
   try {
-    // A server-health or monitoring question is answered by the Monitoring
-    // Orchestrator, which gathers evidence, may enrich with logs, and flags a
-    // repair plan — it never executes anything.
-    if (isServerMonitoringIntent(agentIntent) || isServerHealthQuestion(content)) {
-      const result = await answerServerMonitoringQuestion({
-        userId: user.id,
-        sessionId,
-        question: content,
-        isAdmin: callerIsAdmin(user),
-      })
-
-      await appendTurn({
-        userId: user.id,
-        sessionId,
-        userContent: content,
-        assistantContent: result.message,
-      })
-
-      res.json({
-        success: true,
-        data: {
-          type: result.type,
-          intent: result.intent,
-          serverId: result.serverId,
-          health: result.health,
-          message: result.message,
-          needsRepairAgent: result.needsRepairAgent,
-          repairPlanId: result.repairPlanId,
-          needsApproval: result.needsApproval,
-          repairActions: result.repairActions,
-        },
-      })
-      return
-    }
-
-    // A deployment request is answered by the flow, not the model: the console
-    // must plan and ask for approval, never deploy straight from a message.
-    // The console renders the guided flow itself and fetches its own state
-    // from /api/deployments/vercel/start — the same call the template page
-    // makes, so both entry points run one flow rather than two.
+    // Monitoring questions were already routed before this point, so the only
+    // intents left here are deployment, Terraform, GitHub, repair, and the model
+    // fallback. The console plans and asks for approval; it never deploys from a
+    // raw message.
     const response =
       intent === "vercel_deployment"
         ? {
@@ -1394,110 +1400,84 @@ app.post("/api/chat/sessions/:id/messages", async (req, res) => {
                 message:
                   "Managed n8n deployments are not enabled on this TisiOps instance yet.",
               }
-        : intent === "postgres_managed_server_deployment"
-          ? {
-              type: "postgres_deployment_flow" as const,
-              intent,
-              message: POSTGRES_QUICK_START_MESSAGE,
-              nextStep: POSTGRES_QUICK_START_NEXT_STEP,
-            }
-        : intent === "server_connection"
-          ? {
-              type: "answer" as const,
-              intent,
-              message:
-                "I can help you connect your own server (BYOS). Open the Connect Server wizard to add your server IP and SSH details securely:\n\n[Open Connect Server](/dashboard/servers?connect=true)",
-            }
-        : isDeploymentServerLookupIntent(agentIntent)
-          ? await answerDeploymentServerLookup(user.id, agentIntent, content)
-        : agentIntent === "REPAIR_DEPLOYMENT" ||
-            agentIntent === "DIAGNOSE_DEPLOYMENT"
-          ? await (async () => {
-              const diagnosis = await diagnoseRepair({
-                userId: user.id,
-                sessionId,
-              })
-
-              if (!diagnosis) {
-                return {
+          : intent === "postgres_managed_server_deployment"
+            ? {
+                type: "postgres_deployment_flow" as const,
+                intent,
+                message: POSTGRES_QUICK_START_MESSAGE,
+                nextStep: POSTGRES_QUICK_START_NEXT_STEP,
+              }
+            : intent === "server_connection"
+              ? {
                   type: "answer" as const,
-                  intent: agentIntent,
+                  intent,
                   message:
-                    "Select a deployment first. I need a deployment record before I can diagnose or repair it.",
+                    "I can help you connect your own server (BYOS). Open the Connect Server wizard to add your server IP and SSH details securely:\n\n[Open Connect Server](/dashboard/servers?connect=true)",
                 }
-              }
+              : isDeploymentServerLookupIntent(agentIntent)
+                ? await answerDeploymentServerLookup(user.id, agentIntent, content)
+                : agentIntent === "REPAIR_DEPLOYMENT" ||
+                  agentIntent === "DIAGNOSE_DEPLOYMENT"
+                  ? await (async () => {
+                      const diagnosis = await diagnoseRepair({
+                        userId: user.id,
+                        sessionId,
+                      })
 
-              return {
-                type: "answer" as const,
-                intent: agentIntent,
-                message: [
-                  diagnosis.userExplanation,
-                  "",
-                  "Evidence:",
-                  ...diagnosis.evidence.map((item) => `- ${item}`),
-                  "",
-                  agentIntent === "REPAIR_DEPLOYMENT" &&
-                  diagnosis.approvalRequired
-                    ? "Approval required. Reply yes to queue the recommended repair."
-                    : "No execution approval needed.",
-                ].join("\n"),
-              }
-            })()
-        : agentIntent === "CHECK_SERVER_HEALTH"
-          ? await (async () => {
-              const context = await resolveAgentContext({
-                userId: user.id,
-                sessionId,
-                allowLatestFallback: true,
-              })
+                      if (!diagnosis) {
+                        return {
+                          type: "answer" as const,
+                          intent: agentIntent,
+                          message:
+                            "Select a deployment first. I need a deployment record before I can diagnose or repair it.",
+                        }
+                      }
 
-              return {
-                type: "answer" as const,
-                intent: agentIntent,
-                message: context.activeDeploymentId
-                  ? [
-                      `Deployment status: ${context.latestDeploymentStatus ?? "unknown"}.`,
-                      context.activeTemplateId
-                        ? `Template: ${context.activeTemplateId}.`
-                        : null,
-                      context.latestTelemetrySummary
-                        ? `Details: ${context.latestTelemetrySummary}`
-                        : null,
-                    ]
-                      .filter(Boolean)
-                      .join("\n")
-                  : "Select a deployment first and I can show its server or deployment status.",
-              }
-            })()
-        : // Terraform questions are answered from the deployment's own records
-          // — template, outputs, state, job history — because a plausible but
-          // wrong claim about someone's infrastructure is worse than none.
-          intent === "terraform_agent"
-          ? await answerTerraformQuestion(user.id, content)
-          : // GitHub questions are answered from the user's real repositories,
-            // not by the model guessing at what they might contain.
-            isGithubIntent(intent)
-            ? await runGithubAgent({
-                clerkUserId: user.clerkId,
-                users: clerkClient.users,
-                intent,
-                text: content,
-                // Lets "this repo" and "deploy the frontend" resolve without
-                // the user naming the repository again. Scoped to this user's
-                // own session, so it can never point at someone else's repo.
-                context: await getSessionContext(user.id, sessionId),
-              })
-            : {
-                type: "answer" as const,
-                intent,
-                message: await askMistral(
-                  [
-                    ...(await recentHistory(user.id, sessionId)),
-                    { role: "user" as const, content },
-                  ],
-                  { userId: user.id, isAdmin: callerIsAdmin(user) }
-                ),
-              }
+                      return {
+                        type: "answer" as const,
+                        intent: agentIntent,
+                        message: [
+                          diagnosis.userExplanation,
+                          "",
+                          "Evidence:",
+                          ...diagnosis.evidence.map((item) => `- ${item}`),
+                          "",
+                          agentIntent === "REPAIR_DEPLOYMENT" &&
+                            diagnosis.approvalRequired
+                            ? "Approval required. Reply yes to queue the recommended repair."
+                            : "No execution approval needed.",
+                        ].join("\n"),
+                      }
+                    })()
+                  : // Terraform questions are answered from the deployment's own records
+                    // — template, outputs, state, job history — because a plausible but
+                    // wrong claim about someone's infrastructure is worse than none.
+                    intent === "terraform_agent"
+                    ? await answerTerraformQuestion(user.id, content)
+                    : // GitHub questions are answered from the user's real repositories,
+                      // not by the model guessing at what they might contain.
+                      isGithubIntent(intent)
+                      ? await runGithubAgent({
+                          clerkUserId: user.clerkId,
+                          users: clerkClient.users,
+                          intent,
+                          text: content,
+                          // Lets "this repo" and "deploy the frontend" resolve without
+                          // the user naming the repository again. Scoped to this user's
+                          // own session, so it can never point at someone else's repo.
+                          context: await getSessionContext(user.id, sessionId),
+                        })
+                      : {
+                          type: "answer" as const,
+                          intent,
+                          message: await askMistral(
+                            [
+                              ...(await recentHistory(user.id, sessionId)),
+                              { role: "user" as const, content },
+                            ],
+                            { userId: user.id, isAdmin: callerIsAdmin(user) }
+                          ),
+                        }
 
     // Remember which repository the conversation moved to.
     if ("context" in response && response.context) {
@@ -2000,11 +1980,32 @@ app.post("/api/deployments/n8n/deploy", async (req, res) => {
   res.status(201).json({ success: true, data: { id: result.deploymentId } })
 })
 
+/**
+ * Progress for any managed-server deployment.
+ *
+ * Dispatches on the deployment's own type rather than assuming n8n, so a plain
+ * AWS server gets its own shorter timeline instead of a list of steps that will
+ * never run. The type is returned so the screen knows which retry route to use.
+ */
 app.get("/api/deployments/:id/progress", async (req, res) => {
   const user = await requireDbUser(req, res)
   if (!user) return
 
-  const progress = await getN8nProgress(user.id, req.params.id)
+  const deployment = await prisma.deployment.findFirst({
+    where: { id: req.params.id, userId: user.id },
+    select: { type: true },
+  })
+
+  if (!deployment) {
+    res.status(404).json({ success: false, error: "Deployment not found" })
+    return
+  }
+
+  const progress =
+    deployment.type === "AWS_SERVER"
+      ? await getAwsServerProgress(user.id, req.params.id)
+      : await getN8nProgress(user.id, req.params.id)
+
   if (!progress) {
     res.status(404).json({ success: false, error: "Deployment not found" })
     return
@@ -2012,7 +2013,11 @@ app.get("/api/deployments/:id/progress", async (req, res) => {
 
   res.json({
     success: true,
-    data: { ...progress, server: await getServerFor(user.id, req.params.id) },
+    data: {
+      ...progress,
+      type: deployment.type,
+      server: await getServerFor(user.id, req.params.id),
+    },
   })
 })
 
@@ -2092,6 +2097,110 @@ app.post("/api/deployments/:id/postgres/retry", async (req, res) => {
   if (!user) return
 
   const result = await retryManagedPostgresDeployment({
+    userId: user.id,
+    deploymentId: req.params.id,
+  })
+
+  if (!result.ok) {
+    res.status(422).json({ success: false, error: result.error })
+    return
+  }
+
+  res.json({ success: true, data: { id: result.deploymentId } })
+})
+
+/**
+ * What the New Deployment AWS form may offer.
+ *
+ * Everything here comes from the template registry, so the form cannot present
+ * a region or instance size the validator would refuse later.
+ */
+app.get("/api/deployments/aws/options", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const connection = await getAwsConnectionStatus(user.id)
+
+  res.json({
+    success: true,
+    data: {
+      ...awsServerOptions(),
+      awsConnected: connection.connected,
+      awsAccountId: connection.connection?.awsAccountId ?? null,
+      costWarning: AWS_COST_WARNING,
+      networkWarning: AWS_PUBLIC_SERVER_WARNING,
+      activeDeployments: await countActiveAwsServers(user.id),
+    },
+  })
+})
+
+/**
+ * The plan the user approves.
+ *
+ * Has no side effects: no rows, no AWS calls, nothing to undo. The same config
+ * is revalidated by /api/deployments/aws/deploy, so this is a proposal rather
+ * than a commitment.
+ */
+app.post("/api/deployments/aws/plan", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const parsed = awsServerSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(422).json({ success: false, error: firstIssue(parsed.error) })
+    return
+  }
+
+  const validated = validateAwsServerConfig(parsed.data)
+  if (!validated.ok) {
+    res.status(422).json({ success: false, error: validated.error })
+    return
+  }
+
+  const connection = await getAwsConnectionStatus(user.id)
+
+  res.json({
+    success: true,
+    data: {
+      config: validated.config,
+      plan: awsServerPlan(validated.config),
+      awsConnected: connection.connected,
+      costWarning: AWS_COST_WARNING,
+      networkWarning: AWS_PUBLIC_SERVER_WARNING,
+      approveLabel: "Approve and create server",
+    },
+  })
+})
+
+/** Approval. The first call in this flow that creates anything. */
+app.post("/api/deployments/aws/deploy", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const parsed = awsServerSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(422).json({ success: false, error: firstIssue(parsed.error) })
+    return
+  }
+
+  const result = await createAwsServerDeployment({
+    userId: user.id,
+    config: parsed.data,
+  })
+
+  if (!result.ok) {
+    res.status(422).json({ success: false, error: result.error })
+    return
+  }
+
+  res.status(201).json({ success: true, data: { id: result.deploymentId } })
+})
+
+app.post("/api/deployments/:id/aws/retry", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const result = await retryAwsServerDeployment({
     userId: user.id,
     deploymentId: req.params.id,
   })

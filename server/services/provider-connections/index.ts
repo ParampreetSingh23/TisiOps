@@ -118,9 +118,10 @@ export type AwsConnectionCredentials = {
 /**
  * This user's working AWS credentials, decrypted.
  *
- * The only caller is server power control, which has to act inside the user's
- * own account: a bring-your-own EC2 instance is invisible to the TisiOps
- * account's keys. Nothing here is safe to return from an API — the values stay
+ * Callers have to act inside the user's own account: a bring-your-own EC2
+ * instance is invisible to the TisiOps account's keys, and a server provisioned
+ * into the user's account has to be built with the user's keys. Nothing here is
+ * safe to return from an API, put in a queue payload, or log — the values stay
  * inside the service that makes the AWS call.
  */
 export async function readAwsCredentials(

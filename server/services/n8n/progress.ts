@@ -115,7 +115,9 @@ export function buildProgress(
   deployment: Deployment,
   elasticIp: string | null,
   /** From the deployment's Server row. Only read while it is starting. */
-  serverStatus: string | null = null
+  serverStatus: string | null = null,
+  /** The timeline to draw. Other deployment types pass their own. */
+  timeline: { status: DeploymentStatus; label: string }[] = N8N_STEPS
 ): N8nProgress {
   const phase = phaseOf(deployment.status)
 
@@ -138,10 +140,10 @@ export function buildProgress(
 
   const failed = deployment.status === "FAILED"
   const cancelled = deployment.status === "CANCELLED"
-  const index = N8N_STEPS.findIndex((step) => step.status === deployment.status)
+  const index = timeline.findIndex((step) => step.status === deployment.status)
   const usesDns = Boolean(deployment.domain)
 
-  const steps: ProgressStep[] = N8N_STEPS.map((step, position) => {
+  const steps: ProgressStep[] = timeline.map((step, position) => {
     if (step.status === "WAITING_FOR_DNS" && !usesDns) {
       return { label: step.label, state: "skipped" }
     }

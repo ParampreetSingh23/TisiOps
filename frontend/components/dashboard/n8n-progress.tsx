@@ -23,12 +23,15 @@ import type { SafeLog } from "@tisiops/server/services/deployments"
 import type { N8nProgress } from "@tisiops/server/services/n8n"
 
 /**
- * A managed n8n deployment, seen from the outside.
+ * A managed server deployment, seen from the outside.
  *
  * Built around what the deployment *is* right now, not around a step list. A
  * live workspace wants one link, a stopped one wants one button, and only a
  * run in progress wants a timeline — showing all three at once is what buried
  * the start button under a progress bar reading 0%.
+ *
+ * Serves n8n and plain AWS servers alike: the steps come from the server and
+ * the wording from COPY, so neither is hardcoded here.
  *
  * Everything is read from Postgres. Polling stops once the state cannot change
  * on its own.
@@ -42,7 +45,50 @@ type ServerSummary = {
   status: string
 } | null
 
-type Progress = N8nProgress & { server: ServerSummary }
+/**
+ * The progress route serves every deployment type and says which one it sent,
+ * so the retry button can post to the right place without this screen knowing
+ * how each type is built.
+ */
+type Progress = N8nProgress & { server: ServerSummary; type: string }
+
+/**
+ * The words that differ per type. Everything else here — timeline, log, retry,
+ * power, address — is the same machine underneath, so a second copy of this
+ * screen would only be a second place for the timeline to rot.
+ */
+const COPY: Record<
+  string,
+  {
+    live: string
+    starting: string
+    deploying: string
+    kind: string
+    template: string
+    access: string
+    /** Route segment for POST /api/deployments/:id/<retry>/retry. */
+    retry: string
+  }
+> = {
+  N8N: {
+    live: "Your n8n workspace is live",
+    starting: "Starting your n8n workspace",
+    deploying: "Deploying n8n",
+    kind: "n8n Managed Server",
+    template: "aws-n8n-server",
+    access: "Elastic IP HTTP",
+    retry: "n8n",
+  },
+  AWS_SERVER: {
+    live: "Your server is ready",
+    starting: "Starting your server",
+    deploying: "Creating your server",
+    kind: "Ubuntu Server",
+    template: "aws-ubuntu-server",
+    access: "SSH",
+    retry: "aws",
+  },
+}
 
 const POLL_MS = 4_000
 
@@ -195,11 +241,17 @@ export function N8nProgressView({ id }: { id: string }) {
   }, [id])
 
   async function retry() {
+    if (!progress) return
+
     setIsRetrying(true)
     setError(null)
 
+    const kind = COPY[progress.type] ?? COPY.N8N
+
     try {
-      await apiFetch(`/api/deployments/${id}/n8n/retry`, { method: "POST" })
+      await apiFetch(`/api/deployments/${id}/${kind.retry}/retry`, {
+        method: "POST",
+      })
       window.location.reload()
     } catch (cause) {
       setError((cause as Error).message)
@@ -225,6 +277,7 @@ export function N8nProgressView({ id }: { id: string }) {
   }
 
   const { phase } = progress
+  const copy = COPY[progress.type] ?? COPY.N8N
   // Deploying and restarting look the same on screen — a percentage, a bar, a
   // step list, and the live log — because in both the user is waiting on work
   // that is already under way. Only the steps differ, and the server decides
@@ -241,16 +294,16 @@ export function N8nProgressView({ id }: { id: string }) {
 
             <h2 className="mt-2 font-heading text-xl font-medium tracking-[-0.02em] text-ink-strong">
               {phase === "live"
-                ? "Your n8n workspace is live"
+                ? copy.live
                 : phase === "starting"
-                  ? "Starting your n8n workspace"
+                  ? copy.starting
                   : phase === "stopping"
                     ? "Stopping server"
                   : phase === "stopped"
                     ? "Server stopped"
                     : phase === "failed"
                       ? "Deployment failed"
-                      : "Deploying n8n"}
+                      : copy.deploying}
             </h2>
 
             {progress.publicUrl && phase === "live" ? (
@@ -354,12 +407,14 @@ export function N8nProgressView({ id }: { id: string }) {
       ) : null}
 
       <dl className={`${card} grid gap-4 sm:grid-cols-4`}>
-        <Detail label="Type" value="n8n Managed Server" />
+        <Detail label="Type" value={copy.kind} />
         <Detail label="Provider" value="AWS" />
-        <Detail label="Template" value="aws-n8n-server" />
-        <Detail label="Access Mode" value="Elastic IP HTTP" />
-        <Detail label="Region" value={progress.server?.region ?? "ap-south-1"} />
-        <Detail label="Size" value={progress.server?.instanceType ?? "t3.micro"} />
+        <Detail label="Template" value={copy.template} />
+        <Detail label="Access Mode" value={copy.access} />
+        {/* Read from the Server row, which does not exist until Terraform has
+            run — a default here would name a region the server is not in. */}
+        <Detail label="Region" value={progress.server?.region ?? "Pending"} />
+        <Detail label="Size" value={progress.server?.instanceType ?? "Pending"} />
         <Detail label="Address" value={progress.publicUrl ?? progress.server?.elasticIp ?? "Pending allocation"} />
         <Detail label="Status" value={progress.status} />
       </dl>

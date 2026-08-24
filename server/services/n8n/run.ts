@@ -16,9 +16,9 @@ import {
 } from "../bootstrap/n8nBootstrap.service"
 import {
   generateSshKeyPair,
+  provisioningSshCidr,
   runOverSsh,
   waitForSsh,
-  workerPublicIp,
   type SshTarget,
 } from "../bootstrap/ssh"
 import { validateN8nConfig, type N8nConfig } from "./plans"
@@ -262,7 +262,7 @@ export async function runN8nDeployment(
   const template = findTemplate(TEMPLATE)
   if (!template) return { ok: false, error: "Deployment template not found." }
 
-  const egressForRules = await workerPublicIp()
+  const sshCidr = await provisioningSshCidr()
 
   const tfVars = validateTerraformVariables({
     template: TEMPLATE,
@@ -272,7 +272,7 @@ export async function runN8nDeployment(
     instanceType: config.instanceType,
     volumeSize: config.rootVolumeGb,
     environment: "preview",
-    allowedSshCidr: egressForRules ? `${egressForRules}/32` : "0.0.0.0/0",
+    allowedSshCidr: sshCidr,
   })
 
   if (!tfVars.ok) {
@@ -311,7 +311,7 @@ export async function runN8nDeployment(
   // Scoped to this worker's own address rather than the world. Falls back to
   // open only when the address cannot be determined, and says so — an open
   // port 22 is a decision, not something to do quietly.
-  if (!egressForRules) {
+  if (sshCidr === "0.0.0.0/0") {
     await log(
       "SSH is open for provisioning. Restrict SSH access before production use.",
       "WARNING"

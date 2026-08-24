@@ -5,6 +5,37 @@ export type MappedServerStatus =
   | "STOPPED"
   | "TERMINATED"
 
+/**
+ * Whether this server's AWS calls go to the TisiOps account.
+ *
+ * Only servers TisiOps hosts itself. A server TisiOps provisioned *for* a user
+ * lives in that user's account, so asking the platform account about its
+ * instance id finds nothing — and a destroy that finds nothing leaves an
+ * instance billing forever. The provider decides this, never the presence of a
+ * deployment.
+ */
+export function usesPlatformAwsAccount(provider?: string | null): boolean {
+  return provider === "TISIOPS_MANAGED_AWS"
+}
+
+/**
+ * The address a server can be reached at.
+ *
+ * Elastic IP first, always: once an EIP is attached the auto-assigned publicIp
+ * on the row goes stale, and reaching for it gives an address nothing answers
+ * on. This lives in a leaf module because monitoring, the terminal, the repair
+ * worker and the chat summaries all need it, and every inlined copy of the
+ * expression is another chance to get the order wrong — which is how the stale
+ * address reached the monitoring screen the first time.
+ */
+export function serverAddress(server: {
+  elasticIp?: string | null
+  publicIp?: string | null
+  host?: string | null
+}): string {
+  return server.elasticIp || server.publicIp || server.host || ""
+}
+
 export function mapAwsInstanceState(state: string | null): MappedServerStatus | null {
   if (!state) return null
 

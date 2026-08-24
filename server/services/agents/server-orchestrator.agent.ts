@@ -1,4 +1,5 @@
 import { prisma } from "../../db/prisma"
+import { sanitizeReply } from "../ai/reply"
 import { withSpan } from "../observability/trace"
 import { getMonitoringContext } from "../monitoring-context.service"
 import { runServerMonitoringAgent } from "./server-monitoring.agent"
@@ -173,7 +174,7 @@ export async function answerServerMonitoringQuestion(input: {
   if (needsApproval) {
     parts.push("", "I can create a repair plan for this. Say 'fix it' to approve it.")
   }
-  const message = parts.join("\n")
+  const message = sanitizeReply(parts.join("\n"))
 
   return {
     type: needsApproval ? "server_monitoring_flow" : "answer",

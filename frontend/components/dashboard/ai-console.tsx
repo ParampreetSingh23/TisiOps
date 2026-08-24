@@ -34,6 +34,17 @@ type ChatResponse =
       message: string
       nextStep: string
     }
+  | {
+      type: "server_monitoring_flow"
+      intent: string
+      serverId: string | null
+      health: string | null
+      message: string
+      needsRepairAgent: boolean
+      repairPlanId: string | null
+      needsApproval: boolean
+      repairActions: unknown[]
+    }
   | GithubAgentResponse
 
 /**

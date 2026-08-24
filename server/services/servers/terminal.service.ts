@@ -5,6 +5,7 @@ import {
   decryptStoredServerCredentials,
   syncDeploymentSshKeyToServerCredential,
 } from "./managed-server-credentials"
+import { serverAddress } from "./server-status"
 
 const TOKEN_BYTES = 32
 const TOKEN_TTL_MS = 5 * 60_000
@@ -124,7 +125,7 @@ export async function consumeTerminalSession(sessionId: string, token: string) {
     sessionId: session.id,
     userId: session.userId,
     server: {
-      host: session.server.elasticIp || session.server.publicIp || session.server.host || "",
+      host: serverAddress(session.server),
       port: session.server.sshPort,
       username: session.server.sshUsername || "ubuntu",
       privateKey: resolved.privateKey,

@@ -5,7 +5,9 @@ import {
   pauseBlockedReason,
   reconcileSshServerStatus,
   restartBlockedReason,
+  serverAddress,
   statusAfterFailedSshCheck,
+  usesPlatformAwsAccount,
 } from "./server-status"
 
 const cases: Array<[string | null, string | null]> = [
@@ -144,5 +146,25 @@ for (const { pause, restart, ...input } of permissions) {
     `restart ${input.status}`
   )
 }
+
+// The Elastic IP wins over a stale publicIp. This is the one that regressed
+// before, so it is the one worth pinning.
+assert.equal(
+  serverAddress({ elasticIp: "13.1.1.1", publicIp: "3.9.9.9", host: "old.host" }),
+  "13.1.1.1"
+)
+assert.equal(serverAddress({ publicIp: "3.9.9.9", host: "old.host" }), "3.9.9.9")
+assert.equal(serverAddress({ host: "old.host" }), "old.host")
+// Empty rather than null: callers join it into strings and filter falsy.
+assert.equal(serverAddress({}), "")
+assert.equal(serverAddress({ elasticIp: "", publicIp: "3.9.9.9" }), "3.9.9.9")
+
+// The account an AWS call goes to. A user-account server that TisiOps
+// provisioned still has a deploymentId, so only the provider may decide this.
+assert.equal(usesPlatformAwsAccount("TISIOPS_MANAGED_AWS"), true)
+assert.equal(usesPlatformAwsAccount("USER_AWS_ACCOUNT"), false)
+assert.equal(usesPlatformAwsAccount("CUSTOM_VPS"), false)
+assert.equal(usesPlatformAwsAccount(null), false)
+assert.equal(usesPlatformAwsAccount(undefined), false)
 
 console.log("server status checks passed")

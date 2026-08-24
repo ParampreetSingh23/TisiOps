@@ -183,7 +183,7 @@ export const TEMPLATES: Record<TemplateName, TemplateDefinition> = {
     requiredApprovals: { cost: true, destructive: true },
     retryStrategy: "reuse-state",
     cleanupStrategy: "terraform-destroy",
-    available: false,
+    available: true,
   },
 }
 

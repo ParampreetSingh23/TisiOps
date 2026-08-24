@@ -78,6 +78,18 @@ export const postgresDeploymentSchema = z.object({
 })
 
 /**
+ * A plain AWS server request. Shapes the body only — the registry decides
+ * which regions, instance types and disk sizes are actually allowed, so an
+ * out-of-range value is refused by validateAwsServerConfig rather than here.
+ */
+export const awsServerSchema = z.object({
+  projectName: z.string().trim().min(1).max(60),
+  region: z.string().trim().min(1).max(30).nullable().optional(),
+  instanceType: z.string().trim().min(1).max(30).nullable().optional(),
+  volumeSizeGb: z.number().int().nullable().optional(),
+})
+
+/**
  * Terraform Agent plan request. The template name is checked against the
  * registry by the validator — this only shapes the request body.
  */

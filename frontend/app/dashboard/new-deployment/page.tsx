@@ -96,8 +96,8 @@ const templates: Template[] = [
       { name: "AWS", provider: "aws" },
       { name: "Ubuntu", Icon: SiUbuntu, color: SiUbuntuHex },
       { name: "Terraform", Icon: SiTerraform, color: SiTerraformHex },
-      { name: "Docker", Icon: SiDocker, color: SiDockerHex },
     ],
+    href: "/dashboard/new-deployment/aws",
   },
   {
     id: "aws-n8n-server",

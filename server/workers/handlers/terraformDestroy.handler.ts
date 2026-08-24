@@ -1,9 +1,11 @@
 import { prisma } from "../../db/prisma"
+import { awsServerConfigFor } from "../../services/aws/index"
 import {
   buildCloudInit,
   generateSecrets,
 } from "../../services/bootstrap/n8nBootstrap.service"
 import { validateN8nConfig } from "../../services/n8n/plans"
+import { readAwsCredentials } from "../../services/provider-connections/index"
 import {
   diagnoseTerraformFailure,
   describeFailure,
@@ -12,9 +14,13 @@ import {
   destroy,
   init,
   prepareWorkspace,
+  type AwsCredentials,
 } from "../../services/terraform/terraformRunner.service"
 import { findTemplate } from "../../services/terraform/terraformTemplateRegistry"
-import { validateTerraformVariables } from "../../services/terraform/terraformVariableValidator"
+import {
+  validateTerraformVariables,
+  type VariableInput,
+} from "../../services/terraform/terraformVariableValidator"
 import type { Handler } from "./types"
 
 /**
@@ -60,33 +66,69 @@ export const terraformDestroyHandler: Handler = async ({
     }
   }
 
-  const config = deployment.n8nConfig
-  if (!config) {
-    return { ok: false, error: "This deployment has no saved configuration." }
+  // Terraform needs the same variables it applied with, and each deployment
+  // type keeps its config somewhere different. A destroy also has to run in the
+  // account that holds the resources: a user-account deployment destroyed with
+  // the platform's keys would find nothing and leave the instance billing.
+  let variableInput: VariableInput
+  let credentials: AwsCredentials | undefined
+
+  if (deployment.type === "AWS_SERVER") {
+    const config = await awsServerConfigFor(deploymentId)
+    if (!config) {
+      return { ok: false, error: "This deployment has no saved configuration." }
+    }
+
+    const userCredentials = await readAwsCredentials(deployment.userId)
+    if (!userCredentials) {
+      await log("Destroy refused: no usable AWS connection", "ERROR")
+      return {
+        ok: false,
+        error:
+          "Reconnect your AWS account before removing this server. TisiOps cannot delete resources in your account without it.",
+      }
+    }
+    credentials = userCredentials
+
+    variableInput = {
+      template: deployment.template,
+      deploymentId,
+      projectName: config.projectName,
+      region: config.region,
+      instanceType: config.instanceType,
+      volumeSize: config.volumeSizeGb,
+    }
+  } else {
+    const config = deployment.n8nConfig
+    if (!config) {
+      return { ok: false, error: "This deployment has no saved configuration." }
+    }
+
+    const validatedConfig = validateN8nConfig({
+      workspaceName: config.workspaceName,
+      adminEmail: config.adminEmail,
+      timezone: config.timezone,
+      region: config.region,
+      plan: config.plan,
+      domainMode: config.domainMode,
+      domain: config.domain,
+    })
+
+    if (!validatedConfig.ok) {
+      return { ok: false, error: "Saved settings could not be read." }
+    }
+
+    variableInput = {
+      template: deployment.template,
+      deploymentId,
+      projectName: config.workspaceName,
+      region: config.region,
+      instanceType: config.instanceType,
+      volumeSize: validatedConfig.config.rootVolumeGb,
+    }
   }
 
-  const validatedConfig = validateN8nConfig({
-    workspaceName: config.workspaceName,
-    adminEmail: config.adminEmail,
-    timezone: config.timezone,
-    region: config.region,
-    plan: config.plan,
-    domainMode: config.domainMode,
-    domain: config.domain,
-  })
-
-  if (!validatedConfig.ok) {
-    return { ok: false, error: "Saved settings could not be read." }
-  }
-
-  const tfVars = validateTerraformVariables({
-    template: deployment.template,
-    deploymentId,
-    projectName: config.workspaceName,
-    region: config.region,
-    instanceType: config.instanceType,
-    volumeSize: validatedConfig.config.rootVolumeGb,
-  })
+  const tfVars = validateTerraformVariables(variableInput)
 
   if (!tfVars.ok) return { ok: false, error: tfVars.error }
 
@@ -103,12 +145,18 @@ export const terraformDestroyHandler: Handler = async ({
     cloudInit: buildCloudInit(),
   })
 
-  const initResult = await init(cwd, deploymentId, deployment.template)
+  const initResult = await init(
+    cwd,
+    deploymentId,
+    deployment.template,
+    undefined,
+    credentials
+  )
   if (!initResult.ok) {
     return { ok: false, error: "Terraform could not initialise for destroy." }
   }
 
-  const result = await destroy(cwd, [])
+  const result = await destroy(cwd, [], undefined, credentials)
 
   if (!result.ok) {
     const diagnosis = diagnoseTerraformFailure(result.output)

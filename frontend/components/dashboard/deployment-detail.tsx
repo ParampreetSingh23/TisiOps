@@ -46,7 +46,10 @@ export function DeploymentDetail({ id }: { id: string }) {
     )
   }
 
-  return type === "N8N" ? (
+  // A plain AWS server shares the n8n view: both are one machine with a
+  // timeline, an address and power controls. The view reads its wording from
+  // the type the progress route reports.
+  return type === "N8N" || type === "AWS_SERVER" ? (
     <N8nProgressView id={id} />
   ) : type === "POSTGRES" ? (
     <PostgresDetail id={id} />

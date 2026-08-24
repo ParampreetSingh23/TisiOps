@@ -413,7 +413,7 @@ TisiOps relies on **Redis** and **BullMQ** for executing long-running background
 | `N8N_MANAGED_SERVER_DEPLOYMENT` | `POST /api/deployments/n8n/deploy` | `n8nManagedDeploymentHandler` | Runs Terraform to create EC2, bootstraps Docker & n8n over SSH. |
 | `POSTGRES_MANAGED_SERVER_DEPLOYMENT` | `POST /api/deployments/postgres/deploy` | `postgresManagedDeploymentHandler` | Provisions EC2, configures persistent volume and PostgreSQL container. |
 | `VERCEL_DEPLOYMENT` | `POST /api/deployments/vercel/approve` | `vercelDeploymentHandler` | Creates project via Vercel API and monitors deployment build state. |
-| `AWS_APP_DEPLOYMENT` | `POST /api/deployments/aws/deploy` | `awsAppDeploymentHandler` | Provisions AWS app server and runs Docker bootstrap. |
+| `AWS_APP_DEPLOYMENT` | `POST /api/deployments/aws/deploy` | `awsAppDeploymentHandler` | Provisions a plain Ubuntu EC2 server in the **user's own** AWS account, then verifies it over SSH. Installs nothing. |
 | `RETRY_DEPLOYMENT` | `POST /api/deployments/:id/retry` | `retryDeploymentHandler` | Re-executes the failed deployment stage without destroying existing resources. |
 | `REPAIR_DEPLOYMENT` | `POST /api/ai/repair/approve` | `repairDeploymentHandler` | Executes approved repair steps (restarts containers, clears disk, updates config). |
 | `TERRAFORM_DESTROY` | `POST /api/deployments/:id/terraform/destroy` | `terraformDestroyHandler` | Executes `terraform destroy` with typed `DELETE` confirmation. |
@@ -472,7 +472,7 @@ TisiOps provisions cloud infrastructure using fixed, tested Terraform modules lo
 | :--- | :--- | :--- |
 | `aws-n8n-server` | `server/infra/terraform/modules/aws-n8n-server` | EC2 instance (t3.micro), Elastic IP, Security Group (80, 443, 22), Caddy + n8n + Postgres Docker stack. |
 | `aws-postgres-server` | `server/infra/terraform/modules/aws-postgres-server` | EC2 instance, Elastic IP, Security Group (5432, 22), 20GB gp3 EBS volume, PostgreSQL 16 Docker container. |
-| `aws-app-server` | `server/infra/terraform/modules/aws-app-server` | EC2 instance, Security Group, Docker runtime for custom application deployments. |
+| `aws-app-server` | `server/infra/terraform/modules/aws-app-server` | EC2 instance, Elastic IP, Security Group (80, 443, 22), encrypted gp3 root volume. Infrastructure only — nothing is installed on it. Used by the `aws-ubuntu-server` template. |
 
 ---
 
@@ -665,6 +665,7 @@ Environment variables are organized into clear functional categories. Secrets ar
 | **Server Management (BYOS)** | **Implemented** | Connect servers, encrypted credential storage, SSH health checks, web terminal. |
 | **Managed n8n Deployment** | **Implemented** | Terraform provisioning on AWS EC2, automated Docker/Caddy bootstrap, progress tracker. |
 | **Managed PostgreSQL Deployment** | **Implemented** | Terraform provisioning on AWS EC2, EBS volume creation, connection string reveal. |
+| **Plain AWS Server Deployment** | **Implemented** | `New Deployment → Ubuntu`. Form → plan → approval → BullMQ → `aws-app-server` module, built in the **user's own** AWS account with their connected credentials. Verified over SSH, then `LIVE`. |
 | **Vercel Frontend Deployment** | **Implemented** | GitHub repository analysis, Vercel API project creation, build monitoring. |
 | **AI Console & Intent Routing** | **Implemented** | Intent classifier, session history, specialist agent evidence gathering. |
 | **AI Repair System** | **Implemented** | Multi-agent diagnosis, structured `RepairPlan`, user approval, worker execution. |

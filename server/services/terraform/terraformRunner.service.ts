@@ -36,6 +36,23 @@ export type RunResult = {
 }
 
 /**
+ * Credentials for the account Terraform should build in.
+ *
+ * Omitted means the worker's own environment, which is how the TisiOps-managed
+ * templates (n8n, PostgreSQL) run. Supplied means a user's own AWS account,
+ * decrypted from their saved connection immediately before the run and never
+ * written to disk, a queue payload, or a log.
+ */
+export type AwsCredentials = {
+  accessKeyId: string
+  secretAccessKey: string
+  region?: string
+}
+
+export const CROSS_ACCOUNT_STATE_WARNING =
+  "Remote Terraform state is configured, but this deployment builds in your own AWS account. The state bucket must be reachable with your credentials."
+
+/**
  * Terraform prints variable values on error and echoes environment in debug
  * mode. Anything that could carry a secret is replaced before the text reaches
  * a log table or a browser.
@@ -61,23 +78,44 @@ export function scrub(text: string, secrets: string[]): string {
  * AWS credentials are passed through the environment, which is where the CLI
  * expects them. `TF_IN_AUTOMATION` drops the "run terraform apply next"
  * suggestions, and `-no-color` keeps escape codes out of stored logs.
+ *
+ * When `credentials` are supplied they are added to the redaction list here
+ * rather than at the call site, so no caller can leak them by forgetting.
  */
 async function run(
   args: string[],
   cwd: string,
-  options: { secrets?: string[]; onLine?: (line: string) => void } = {}
+  options: {
+    secrets?: string[]
+    onLine?: (line: string) => void
+    credentials?: AwsCredentials
+  } = {}
 ): Promise<RunResult> {
-  const secrets = options.secrets ?? []
+  const secrets = [
+    ...(options.secrets ?? []),
+    ...(options.credentials
+      ? [options.credentials.secretAccessKey, options.credentials.accessKeyId]
+      : []),
+  ]
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    TF_IN_AUTOMATION: "1",
+    TF_INPUT: "0",
+  }
+
+  if (options.credentials) {
+    env.AWS_ACCESS_KEY_ID = options.credentials.accessKeyId
+    env.AWS_SECRET_ACCESS_KEY = options.credentials.secretAccessKey
+    // A session token or profile left over from the worker's own role would be
+    // paired with the user's long-lived key and rejected by AWS.
+    delete env.AWS_SESSION_TOKEN
+    delete env.AWS_PROFILE
+    if (options.credentials.region) env.AWS_REGION = options.credentials.region
+  }
 
   return new Promise((resolve) => {
-    const child = spawn("terraform", [...args, "-no-color"], {
-      cwd,
-      env: {
-        ...process.env,
-        TF_IN_AUTOMATION: "1",
-        TF_INPUT: "0",
-      },
-    })
+    const child = spawn("terraform", [...args, "-no-color"], { cwd, env })
 
     let output = ""
 
@@ -168,7 +206,8 @@ export async function init(
   cwd: string,
   deploymentId: string,
   template: string,
-  onLine?: (line: string) => void
+  onLine?: (line: string) => void,
+  credentials?: AwsCredentials
 ): Promise<RunResult> {
   const bucket = process.env.TF_STATE_BUCKET
 
@@ -179,7 +218,7 @@ export async function init(
     const main = await readFile(mainPath, "utf8")
     await writeFile(mainPath, main.replace(/\n\s*backend "s3" \{\}\n/, "\n"))
 
-    return run(["init", "-upgrade"], cwd, { onLine })
+    return run(["init", "-upgrade"], cwd, { onLine, credentials })
   }
 
   const backend = [
@@ -194,25 +233,36 @@ export async function init(
     )
   }
 
-  return run(["init", "-upgrade", ...backend], cwd, { onLine })
+  // ponytail: the backend authenticates with whatever credentials this run
+  // uses, so a user-account deployment needs a state bucket its own keys can
+  // reach. Split the two scopes (backend role, provider keys) if remote state
+  // and user accounts have to coexist in one bucket.
+  return run(["init", "-upgrade", ...backend], cwd, { onLine, credentials })
 }
 
 export async function plan(
   cwd: string,
   secrets: string[],
-  onLine?: (line: string) => void
+  onLine?: (line: string) => void,
+  credentials?: AwsCredentials
 ): Promise<RunResult> {
-  return run(["plan", "-out=tisiops.tfplan"], cwd, { secrets, onLine })
+  return run(["plan", "-out=tisiops.tfplan"], cwd, {
+    secrets,
+    onLine,
+    credentials,
+  })
 }
 
 export async function apply(
   cwd: string,
   secrets: string[],
-  onLine?: (line: string) => void
+  onLine?: (line: string) => void,
+  credentials?: AwsCredentials
 ): Promise<RunResult> {
   return run(["apply", "-auto-approve", "tisiops.tfplan"], cwd, {
     secrets,
     onLine,
+    credentials,
   })
 }
 
@@ -238,15 +288,17 @@ export type TerraformOutputs = {
 export async function destroy(
   cwd: string,
   secrets: string[],
-  onLine?: (line: string) => void
+  onLine?: (line: string) => void,
+  credentials?: AwsCredentials
 ): Promise<RunResult> {
-  return run(["destroy", "-auto-approve"], cwd, { secrets, onLine })
+  return run(["destroy", "-auto-approve"], cwd, { secrets, onLine, credentials })
 }
 
 export async function readOutputs(
-  cwd: string
+  cwd: string,
+  credentials?: AwsCredentials
 ): Promise<TerraformOutputs | null> {
-  const result = await run(["output", "-json"], cwd)
+  const result = await run(["output", "-json"], cwd, { credentials })
   if (!result.ok) return null
 
   try {

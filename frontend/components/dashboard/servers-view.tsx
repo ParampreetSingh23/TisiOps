@@ -1,6 +1,7 @@
 "use client"
 
 import {
+  Activity,
   Check,
   Copy,
   Loader2,
@@ -58,6 +59,24 @@ export type ServerRecord = {
   lastCheckedAt?: string
   createdAt: string
   updatedAt: string
+}
+
+/**
+ * How each provider is named and drawn.
+ *
+ * The stored value is a database enum; printing it raw put USER_AWS_ACCOUNT on
+ * the card and matched no icon, because the icon set is keyed by short provider
+ * names. Whose account it is belongs on this card — it decides who is billed.
+ */
+const PROVIDERS: Record<string, { icon: string; label: string }> = {
+  USER_AWS_ACCOUNT: { icon: "aws", label: "AWS · your account" },
+  TISIOPS_MANAGED_AWS: { icon: "aws", label: "AWS · managed by TisiOps" },
+  TISIOPS_MANAGED_VERCEL: { icon: "vercel", label: "Vercel · managed" },
+  CUSTOM_VPS: { icon: "custom-vps", label: "Your own server" },
+}
+
+export function providerLabel(provider: string | null | undefined): string {
+  return PROVIDERS[provider ?? ""]?.label ?? provider ?? "—"
 }
 
 export function formatStatus(status: string): string {
@@ -288,8 +307,13 @@ export function ServersView() {
                   {/* Clean Text Metadata Row (No AI-style pill borders) */}
                   <div className="mt-4 flex items-center gap-4 text-xs text-ink-muted border-t border-line/50 pt-3">
                     <div className="flex items-center gap-1.5">
-                      <ProviderIcon id={server.provider.toLowerCase().replace("_", "-")} className="size-3.5" />
-                      <span className="font-medium text-ink-default">{server.provider}</span>
+                      <ProviderIcon
+                        id={PROVIDERS[server.provider]?.icon ?? "custom-vps"}
+                        className="size-3.5"
+                      />
+                      <span className="font-medium text-ink-default">
+                        {PROVIDERS[server.provider]?.label ?? server.provider}
+                      </span>
                     </div>
 
                     <span className="text-line-warm">•</span>
@@ -336,7 +360,7 @@ export function ServersView() {
                 </div>
 
                 {/* Actions */}
-                <div className="mt-5 flex items-center justify-between border-t border-line/60 pt-3">
+                <div className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-line/60 pt-3">
                   <Link
                     href={`/dashboard/servers/${server.id}`}
                     className="text-xs font-semibold text-brand transition-colors hover:underline"
@@ -344,7 +368,16 @@ export function ServersView() {
                     View Server →
                   </Link>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Link
+                      href={`/dashboard/servers/${server.id}/monitoring`}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-[6px] border border-line-warm bg-surface px-2.5 text-xs font-medium text-ink-default hover:bg-canvas"
+                      title="Open monitoring"
+                    >
+                      <Activity className="size-3 text-ink-muted" />
+                      <span>Monitoring</span>
+                    </Link>
+
                     <button
                       onClick={() => handleCheckHealth(server.id)}
                       disabled={isChecking}

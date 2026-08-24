@@ -237,7 +237,7 @@ export default function ServerMonitoringPage() {
 
   if (error && !monitoring) {
     return (
-      <div className="rounded-lg border border-line bg-surface p-8 text-center shadow-card">
+      <div className="rounded-[6px] border border-line bg-surface p-8 text-center shadow-card">
         <AlertCircle className="mx-auto size-8 text-amber-500" />
         <h2 className="mt-4 font-heading text-lg font-semibold text-ink-strong">
           Monitoring Unavailable
@@ -302,7 +302,7 @@ export default function ServerMonitoringPage() {
   })()
 
   return (
-    <div className="space-y-6 max-w-5xl">
+    <div className="mx-auto w-full max-w-[1280px] space-y-6">
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-line pb-6">
         <div>

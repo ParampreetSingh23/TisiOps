@@ -7,7 +7,7 @@ import {
   Lock,
   ShieldAlert,
 } from "lucide-react"
-import { useRouter } from "next/navigation"
+import Link from "next/link"
 import { useCallback, useState } from "react"
 
 import { AwsConnect } from "@/components/deployment/aws-connect"
@@ -117,7 +117,6 @@ function StepIndicator({ current }: { current: number }) {
 }
 
 export function DeploymentWizard({ providers }: { providers: Provider[] }) {
-  const router = useRouter()
   const [step, setStep] = useState(0)
   const [provider, setProvider] = useState<string | null>(null)
   const [repo, setRepo] = useState<string | null>(null)
@@ -141,11 +140,6 @@ export function DeploymentWizard({ providers }: { providers: Provider[] }) {
     (step === 2 && repo !== null) ||
     (step === 4 && QUESTIONS.every((question) => answers[question.id])) ||
     ![0, 1, 2, 4].includes(step)
-
-  function approveAndDeploy() {
-    const id = Math.random().toString(36).slice(2, 10)
-    router.push(`/dashboard/deployments/${id}`)
-  }
 
   return (
     <div>
@@ -436,13 +430,22 @@ export function DeploymentWizard({ providers }: { providers: Provider[] }) {
             No infrastructure changes will happen until you approve this plan.
           </p>
 
-          <button
-            type="button"
-            onClick={approveAndDeploy}
-            className={`mt-6 h-12 px-6 text-base ${primaryButton}`}
+          {/* Deploying an application from GitHub onto a server is not built
+              yet, so this cannot approve the plan above. It hands over to the
+              flow that is real rather than fabricating a deployment id and
+              navigating to a page with nothing behind it. */}
+          <p className="mt-6 text-sm text-ink-default">
+            Deploying an app from a repository is still being built. Provisioning
+            the server is not: that flow creates a real Ubuntu machine in your
+            AWS account, and you can deploy onto it yourself once it is up.
+          </p>
+
+          <Link
+            href="/dashboard/new-deployment/aws"
+            className={`mt-4 h-12 px-6 text-base ${primaryButton}`}
           >
-            Approve and Deploy
-          </button>
+            Continue to server provisioning
+          </Link>
         </section>
       ) : null}
 

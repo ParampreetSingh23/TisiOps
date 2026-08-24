@@ -7,7 +7,7 @@ import { useCallback, useEffect, useState } from "react"
 import { ConfirmModal } from "@/components/dashboard/confirm-modal"
 import { SshCredentialsModal } from "@/components/dashboard/ssh-credentials-modal"
 import { apiFetch } from "@/lib/api"
-import { card, primaryButton, secondaryButton } from "@/lib/ui"
+import { primaryButton, secondaryButton } from "@/lib/ui"
 
 export type MonitoringRecord = {
   serverId: string
@@ -27,7 +27,6 @@ export type MonitoringRecord = {
   errorMessage: string | null
 }
 
-/** Same quiet badge treatment as the deployment status pills. */
 const BADGE_STYLES: Record<string, string> = {
   ACTIVE: "border-[#cfe6dc] bg-[#f2f9f6] text-[#0f6b4f]",
   INSTALLING: "border-brand bg-brand-soft text-brand",
@@ -55,13 +54,6 @@ const STATUS_MESSAGES: Record<string, string> = {
   UPGRADING: "Monitoring is upgrading.",
 }
 
-/**
- * Phase 2 monitoring card: it reports state and drives the user flow around it
- * — Monitor, Retry, Enable — but never installs anything. Phase 3 workers do
- * the real install; here the backend flips status to INSTALLING on approval.
- * Ownership is enforced server-side, so a foreign server id can never be acted
- * on here.
- */
 export function MonitoringStatusCard({ serverId }: { serverId: string }) {
   const [monitoring, setMonitoring] = useState<MonitoringRecord | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -84,8 +76,6 @@ export function MonitoringStatusCard({ serverId }: { serverId: string }) {
     void load()
   }, [load])
 
-  // Poll while an install/upgrade is in flight so the badge flips to ACTIVE or
-  // FAILED without a manual refresh; stop as soon as the state settles.
   const inFlight = monitoring?.status === "INSTALLING" || monitoring?.status === "UPGRADING"
   useEffect(() => {
     if (!inFlight) return
@@ -101,7 +91,6 @@ export function MonitoringStatusCard({ serverId }: { serverId: string }) {
       await apiFetch(`/api/servers/${serverId}/monitoring/enable`, {
         method: "POST",
       })
-      // Backend is the source of truth: re-read, don't assume the new state.
       await load()
     } catch (err) {
       setError(
@@ -128,7 +117,7 @@ export function MonitoringStatusCard({ serverId }: { serverId: string }) {
             className={primaryButton}
           >
             View Monitoring
-            <ArrowRight className="ml-1.5 size-4" aria-hidden />
+            <ArrowRight className="ml-1.5 size-3.5" aria-hidden />
           </Link>
         )
       case "INSTALLING":
@@ -156,7 +145,7 @@ export function MonitoringStatusCard({ serverId }: { serverId: string }) {
             onClick={() => setModal("retry")}
             className={secondaryButton}
           >
-            Retry Monitoring Setup
+            Retry Setup
           </button>
         )
       case "DISABLED":
@@ -183,14 +172,14 @@ export function MonitoringStatusCard({ serverId }: { serverId: string }) {
   const inProgress = status === "INSTALLING" || status === "UPGRADING"
 
   return (
-    <section className={card}>
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="font-heading text-base font-semibold text-ink-strong">
+    <section className="rounded-[6px] border border-line bg-surface p-5 shadow-card">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-ink-muted">
           Monitoring
         </h2>
         {monitoring ? (
           <span
-            className={`rounded-[4px] border px-2 py-0.5 text-xs font-semibold ${
+            className={`rounded-[3px] border px-1.5 py-0.5 text-[10px] font-semibold ${
               BADGE_STYLES[status] ?? BADGE_STYLES.NOT_INSTALLED
             }`}
           >
@@ -200,38 +189,38 @@ export function MonitoringStatusCard({ serverId }: { serverId: string }) {
       </div>
 
       {error ? (
-        <p className="mt-3 text-sm text-ink-muted">{error}</p>
+        <p className="mt-2 text-xs text-ink-muted">{error}</p>
       ) : !monitoring ? (
-        <p className="mt-3 flex items-center gap-2 text-sm text-ink-muted">
-          <Loader2 className="size-3.5 motion-safe:animate-spin" aria-hidden />
+        <p className="mt-2 flex items-center gap-1.5 text-xs text-ink-muted">
+          <Loader2 className="size-3 motion-safe:animate-spin" aria-hidden />
           Loading…
         </p>
       ) : (
         <>
-          <p className="mt-3 text-sm text-ink-default">
+          <p className="mt-2 text-xs text-ink-default">
             {STATUS_MESSAGES[status] ?? STATUS_MESSAGES.NOT_INSTALLED}
           </p>
 
           {inProgress ? (
-            <p className="mt-2 flex items-center gap-2 text-xs text-ink-muted">
-              <Loader2 className="size-3.5 motion-safe:animate-spin" aria-hidden />
+            <p className="mt-1 flex items-center gap-1.5 text-[10px] text-ink-muted">
+              <Loader2 className="size-3 motion-safe:animate-spin" aria-hidden />
               Configuring…
             </p>
           ) : null}
 
           {status === "ACTIVE" && monitoring.agentVersion ? (
-            <p className="mt-2 text-xs text-ink-muted">
+            <p className="mt-1 text-[10px] text-ink-muted">
               Agent v{monitoring.agentVersion}
             </p>
           ) : null}
 
           {status === "FAILED" && monitoring.errorMessage ? (
-            <p className="mt-2 text-xs text-ink-muted">
+            <p className="mt-1 text-[10px] text-ink-muted">
               {monitoring.errorMessage}
             </p>
           ) : null}
 
-          <div className="mt-4">{button}</div>
+          <div className="mt-4 flex flex-wrap items-center gap-2">{button}</div>
         </>
       )}
 
@@ -244,8 +233,8 @@ export function MonitoringStatusCard({ serverId }: { serverId: string }) {
         }
         description={
           modal === "retry"
-            ? "TisiOps will retry preparing this server for monitoring. Monitoring installs only once for this server."
-            : "TisiOps will prepare this server for monitoring so CPU, memory, disk, Docker, and service health can be tracked.\n\nMonitoring is installed only once for this server."
+            ? "TisiOps will retry preparing this server for monitoring."
+            : "TisiOps will prepare this server for monitoring so CPU, memory, disk, Docker, and service health can be tracked."
         }
         confirmText={modal === "retry" ? "Retry Setup" : "Enable Monitoring"}
         cancelText="Cancel"
@@ -260,7 +249,6 @@ export function MonitoringStatusCard({ serverId }: { serverId: string }) {
           serverId={serverId}
           onClose={() => setShowCredentials(false)}
           onSaved={() => {
-            // Credentials are saved: retry monitoring so the install can proceed.
             void handleEnable()
           }}
         />

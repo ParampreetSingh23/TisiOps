@@ -1,5 +1,6 @@
 import { prisma } from "../../db/prisma"
 import { isPortOpen } from "./server-reachable"
+import { serverAddress } from "./server-status"
 
 export type MonitoringStatusValue =
   | "NOT_INSTALLED"
@@ -178,7 +179,7 @@ export async function enableServerMonitoring(
   })
   if (!server) return { ok: false }
 
-  const host = server.elasticIp || server.publicIp || server.host || ""
+  const host = serverAddress(server)
   const portOpen = host ? await isPortOpen(host, server.sshPort || 22, 5000) : false
   const blockedReason = monitoringEnableBlockedReason({
     serverStatus: server.status,

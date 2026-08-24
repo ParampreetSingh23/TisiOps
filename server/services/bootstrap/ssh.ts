@@ -211,3 +211,24 @@ export async function workerPublicIp(): Promise<string | null> {
     return null
   }
 }
+
+/**
+ * The CIDR allowed to reach port 22 while a server is being provisioned.
+ *
+ * PROVISIONING_SSH_CIDR wins, for a worker behind a NAT gateway or a fixed
+ * egress range — the discovered address is one machine's, and a pool of workers
+ * would each need their own rule. Otherwise this worker's own address.
+ *
+ * The last fallback is the whole internet, because without port 22 the
+ * verification step cannot run at all and the deployment would fail on a server
+ * that is fine. The caller logs it and the validator warns: an open port 22 is
+ * a decision, not something to do quietly. A malformed override is rejected by
+ * validateTerraformVariables rather than silently widening the rule.
+ */
+export async function provisioningSshCidr(): Promise<string> {
+  const configured = process.env.PROVISIONING_SSH_CIDR?.trim()
+  if (configured) return configured
+
+  const ip = await workerPublicIp()
+  return ip ? `${ip}/32` : "0.0.0.0/0"
+}

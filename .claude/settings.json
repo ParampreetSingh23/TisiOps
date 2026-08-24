@@ -1,0 +1,15 @@
+{
+  "env": {
+    "ANTHROPIC_API_KEY": "sk-Kh3UXOr5WHJEu1f4cVMrtuX0o5av8lJwjysAvDgMgxzlmZQc",
+    "ANTHROPIC_BASE_URL": "https://agentrouter.org",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "ANTHROPIC_MODEL": "claude-opus-5"
+  },
+  "permissions": {
+    "allow": [],
+    "deny": []
+  },
+  "model": "claude-opus-5",
+  "effortLevel": "high",
+  "theme": "dark"
+}

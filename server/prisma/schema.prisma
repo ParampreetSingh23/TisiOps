@@ -46,12 +46,16 @@ enum DeploymentType {
   VERCEL
   N8N
   POSTGRES
+  /// A server provisioned in the user's own AWS account with their own credentials.
+  AWS_SERVER
 }
 
 enum DeploymentProvider {
   TISIOPS_MANAGED_VERCEL
   /// EC2 in the TisiOps-owned AWS account. The user supplies no credentials.
   TISIOPS_MANAGED_AWS
+  /// EC2 in the user's own AWS account, using the AWS connection they saved.
+  USER_AWS_ACCOUNT
 }
 
 enum DeploymentStatus {

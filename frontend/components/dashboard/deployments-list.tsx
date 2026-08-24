@@ -66,6 +66,19 @@ export function statusLabel(status: string): string {
     .join(" ")
 }
 
+/**
+ * What a deployment without a repository is.
+ *
+ * These rows have no owner/branch to show, so the type carries the whole
+ * description. No region here: the row does not carry one, and naming a region
+ * the server is not in reads as a fact rather than a guess.
+ */
+const TYPE_LABELS: Record<string, string> = {
+  N8N: "n8n Managed Server · AWS",
+  POSTGRES: "PostgreSQL Managed Server · AWS",
+  AWS_SERVER: "Ubuntu Server · your AWS account",
+}
+
 /** Quieter than a pill, which turned every row into a warning. */
 export function StatusDot({ status }: { status: string }) {
   const running = [
@@ -201,8 +214,9 @@ export function DeploymentsList() {
                 </div>
 
                 <p className="mt-1 truncate font-mono text-xs text-ink-muted">
-                  {deployment.type === "N8N" || !deployment.repositoryOwner ? (
-                    "n8n Managed Server · AWS ap-south-1"
+                  {deployment.type in TYPE_LABELS ||
+                  !deployment.repositoryOwner ? (
+                    TYPE_LABELS[deployment.type] ?? deployment.type
                   ) : (
                     <>
                       {deployment.repositoryOwner}/{deployment.repositoryName}

@@ -213,8 +213,34 @@ const INFRA_QUESTION =
 const DESTROY_WORDS =
   /\b(destroy|tear\s?down|delete)\b[\s\S]{0,30}\b(deployment|server|infrastructure|resources?|stack)\b|\bclean\s?up\b[\s\S]{0,30}\b(failed|resources?|infrastructure)\b/i
 
+/**
+ * Server-monitoring vocabulary. A monitoring question (CPU, RAM, disk, Docker,
+ * container health, heartbeat, "is my server healthy") reads live metrics from a
+ * server — it is NOT an infrastructure/Terraform question. This guard keeps the
+ * Terraform and deployment classifiers from claiming monitoring queries. Kept
+ * local to this file to avoid a circular import with the orchestrator's
+ * classifier. The orchestrator's monitoring branch is the single place that
+ * answers these; context must never decide intent.
+ */
+const SERVER_MONITORING =
+  /\b(cpu|processor|memory|ram|disk|storage|docker|container|unhealthy|heartbeat|metrics?|monitoring?|health|healthy|slow|performance|lag|sluggish|usage|load)\b/i
+
+function isServerMonitoringQuestion(text: string): boolean {
+  const t = text.toLowerCase()
+  if (!SERVER_MONITORING.test(t)) return false
+  // A monitoring question talks about a server, or a metric word with a
+  // possessive/question opener ("my cpu", "what is cpu load"). Deployment actions
+  // ("deploy my app", "what will my server create") carry none of these metric
+  // words, so they are not captured here.
+  if (/\bserver\b/.test(t)) return true
+  if (/\b(my|the|this|our)\b[\s\S]{0,20}\b(cpu|memory|ram|disk|docker|container|health|resource|load|usage|metrics?|monitoring?|heartbeat)\b/.test(t)) return true
+  if (/^(what|how|is|are|show|check|see|tell|why)\b/.test(t) && /\b(cpu|memory|ram|disk|docker|container|health|resource|load|usage|metrics?|monitoring?|heartbeat)\b/.test(t)) return true
+  return false
+}
+
 /** True when the message is about a deployment's infrastructure. */
 export function isTerraformIntent(text: string): boolean {
+  if (isServerMonitoringQuestion(text)) return false
   if (TERRAFORM.test(text)) return true
   if (DESTROY_WORDS.test(text)) return true
 

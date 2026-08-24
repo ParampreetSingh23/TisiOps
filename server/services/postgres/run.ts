@@ -4,9 +4,9 @@ import { decryptSecret, encryptSecret } from "../../utils/crypto"
 import { buildDockerInstall } from "../bootstrap/n8nBootstrap.service"
 import {
   generateSshKeyPair,
+  provisioningSshCidr,
   runOverSsh,
   waitForSsh,
-  workerPublicIp,
   type SshTarget,
 } from "../bootstrap/ssh"
 import { appendLog } from "../deployments/index"
@@ -145,7 +145,7 @@ export async function runPostgresDeployment(
 
   if (!remoteStateConfigured()) await log(LOCAL_STATE_WARNING, "WARNING")
 
-  const egressForRules = await workerPublicIp()
+  const egressForRules = await provisioningSshCidr()
   const tfVars = validateTerraformVariables({
     template: TEMPLATE,
     deploymentId,
@@ -154,7 +154,7 @@ export async function runPostgresDeployment(
     instanceType: config.instanceType,
     volumeSize: config.volumeSizeGb,
     environment: "preview",
-    allowedSshCidr: egressForRules ? `${egressForRules}/32` : "0.0.0.0/0",
+    allowedSshCidr: egressForRules,
   })
 
   if (!tfVars.ok) {

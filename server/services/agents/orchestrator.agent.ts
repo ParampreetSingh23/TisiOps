@@ -15,6 +15,7 @@ import { runRepairAgent } from "./repair.agent"
 import { runServerAgent } from "./server.agent"
 import { runTerraformAgent } from "./terraform.agent"
 import { runVercelAgent } from "./vercel.agent"
+import { stagingIntentFromText } from "./staging.agent"
 
 export const TISIOPS_SCOPE_MESSAGE =
   "I can only help with TisiOps deployment, infrastructure, cloud, GitHub, Docker, monitoring, logs, and DevOps planning. Ask me something about your deployment or infrastructure setup."
@@ -114,9 +115,12 @@ function hasDevopsIntent(text: string): boolean {
 export function classifyIntent(text: string): AgentIntent {
   if (isAccountMemoryQuestion(text)) return "GENERAL_TISIOPS_HELP"
   if (isRepairApprovalText(text)) return "REPAIR_DEPLOYMENT"
+  const stagingIntent = stagingIntentFromText(text)
+  if (stagingIntent) return stagingIntent
   const monitoringIntent = monitoringIntentFromText(text)
   if (monitoringIntent) return monitoringIntent
   if (!hasDevopsIntent(text)) return "OUT_OF_SCOPE"
+  if (/\bterraform\b/i.test(text)) return "CHECK_TERRAFORM_STATE"
   if (/\b(why|diagnose|failed|failure|error)\b/i.test(text)) {
     return "DIAGNOSE_DEPLOYMENT"
   }
@@ -153,6 +157,23 @@ export function classifyIntent(text: string): AgentIntent {
   }
   if (/\blogs?\b/i.test(text)) return "CHECK_LOGS"
   return "GENERAL_TISIOPS_HELP"
+}
+
+export function agentNameForIntent(intent: AgentIntent): string {
+  if (intent.includes("STAGING")) return "StagingAgent"
+  if (intent === "CHECK_TERRAFORM_STATE") return "TerraformAgent"
+  if (
+    [
+      "GET_DEPLOYMENT_STATUS",
+      "GET_LAST_DEPLOYMENT",
+      "LIST_DEPLOYMENTS",
+      "DIAGNOSE_DEPLOYMENT",
+      "REPAIR_DEPLOYMENT",
+    ].includes(intent)
+  ) {
+    return "DeploymentAgent"
+  }
+  return "OrchestratorAgent"
 }
 
 export async function diagnoseRepair(input: {

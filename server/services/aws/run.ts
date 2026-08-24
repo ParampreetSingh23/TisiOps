@@ -28,6 +28,11 @@ import {
 import { readAwsCredentials } from "../provider-connections/index"
 import { getOrCreateServerMonitoring } from "../servers/server-monitoring.service"
 import {
+  buildStagingDeployScript,
+  missingUserSecrets,
+  type StagingDeploymentPayload,
+} from "../servers/staging-execution"
+import {
   describeFailure,
   diagnoseTerraformFailure,
 } from "../terraform/terraformDiagnostics"
@@ -51,6 +56,40 @@ import {
 } from "./plans"
 
 export type RunOutcome = { ok: true } | { ok: false; error: string }
+
+function stagingPayload(value: unknown): StagingDeploymentPayload | null {
+  const payload = value as Partial<StagingDeploymentPayload> | null
+  if (
+    !payload ||
+    typeof payload.stagingSessionId !== "string" ||
+    typeof payload.repositoryUrl !== "string" ||
+    typeof payload.stagingBranch !== "string" ||
+    typeof payload.appPort !== "number" ||
+    !Array.isArray(payload.requiredEnvVars) ||
+    !Array.isArray(payload.services)
+  ) {
+    return null
+  }
+
+  return {
+    stagingSessionId: payload.stagingSessionId,
+    repositoryUrl: payload.repositoryUrl,
+    stagingBranch: payload.stagingBranch,
+    appPort: payload.appPort,
+    servicePath: typeof payload.servicePath === "string" ? payload.servicePath : null,
+    requiredEnvVars: payload.requiredEnvVars.filter((name): name is string => typeof name === "string"),
+    services: payload.services.filter((name): name is string => typeof name === "string"),
+  }
+}
+
+async function publicHttpReady(url: string): Promise<boolean> {
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(15_000) })
+    return response.ok
+  } catch {
+    return false
+  }
+}
 
 async function setStatus(
   deploymentId: string,
@@ -120,6 +159,9 @@ export async function runAwsServerDeployment(
   }
 
   const config = validated.config
+  const staging = stagingPayload(
+    (job.payloadJson as { staging?: unknown } | null)?.staging
+  )
   const template = findTemplate(AWS_SERVER_TEMPLATE)
   if (!template) return { ok: false, error: "Deployment template not found." }
 
@@ -142,6 +184,19 @@ export async function runAwsServerDeployment(
     const error = "This deployment has no recorded cost approval."
     await log(error, "ERROR")
     return { ok: false, error }
+  }
+
+  if (staging) {
+    const missingSecrets = missingUserSecrets(staging.requiredEnvVars)
+    if (missingSecrets.length > 0) {
+      const error = `AWAITING_SECRETS: ${missingSecrets.join(", ")}`
+      await log(error, "ERROR")
+      await prisma.stagingSession.update({
+        where: { id: staging.stagingSessionId },
+        data: { status: "PLAN_READY" },
+      }).catch(() => {})
+      return { ok: false, error }
+    }
   }
 
   const credentials = await readAwsCredentials(deployment.userId)
@@ -420,17 +475,89 @@ export async function runAwsServerDeployment(
     // Lazy creation on the monitoring route covers it.
   }
 
+  if (staging) {
+    await setStatus(
+      deploymentId,
+      "DEPLOYING",
+      "Deploying the staging branch on the new server."
+    )
+    await log("Deploying staging branch")
+
+    const deploy = await runOverSsh(
+      ssh,
+      buildStagingDeployScript({ deploymentId, payload: staging }),
+      30 * 60_000
+    )
+
+    if (!deploy.ok || !deploy.output.includes("STAGING_READY")) {
+      const branchMissing = /Remote branch .* not found|couldn't find remote ref|not found/i.test(deploy.output)
+      const unsupported = /UNSUPPORTED_STAGING_DEPLOYMENT/.test(deploy.output)
+      const error = branchMissing
+        ? "STAGING_BRANCH_REQUIRED"
+        : unsupported
+          ? "UNSUPPORTED_STAGING_DEPLOYMENT: Docker Compose file not found"
+          : "Staging deployment failed."
+
+      await prisma.deployment.update({
+        where: { id: deploymentId },
+        data: {
+          status: "FAILED",
+          statusDetail: error,
+          failureCode: branchMissing
+            ? "STAGING_BRANCH_REQUIRED"
+            : unsupported
+              ? "UNSUPPORTED_STAGING_DEPLOYMENT"
+              : "STAGING_DEPLOYMENT_FAILED",
+        },
+      })
+      await prisma.stagingSession.update({
+        where: { id: staging.stagingSessionId },
+        data: { status: "FAILED" },
+      }).catch(() => {})
+      await log(error, "ERROR")
+      return { ok: false, error }
+    }
+
+    const publicUrl = `http://${outputs.elasticIp}`
+    if (!(await publicHttpReady(publicUrl))) {
+      const error = "PUBLIC_HTTP_ENDPOINT_FAILED"
+      await prisma.deployment.update({
+        where: { id: deploymentId },
+        data: {
+          status: "FAILED",
+          statusDetail: error,
+          failureCode: error,
+        },
+      })
+      await prisma.stagingSession.update({
+        where: { id: staging.stagingSessionId },
+        data: { status: "FAILED" },
+      }).catch(() => {})
+      await log(`Public HTTP check failed: ${publicUrl}`, "ERROR")
+      return { ok: false, error }
+    }
+
+    await log("Staging services verified", "SUCCESS")
+  }
+
   await prisma.deployment.update({
     where: { id: deploymentId },
     data: {
       status: "LIVE",
       statusDetail: null,
       failureCode: null,
-      publicUrl: null,
+      publicUrl: staging ? `http://${outputs.elasticIp}` : null,
     },
   })
 
-  await log("Server is ready", "SUCCESS")
+  if (staging) {
+    await prisma.stagingSession.update({
+      where: { id: staging.stagingSessionId },
+      data: { status: "READY" },
+    }).catch(() => {})
+  }
+
+  await log(staging ? `Staging ready: http://${outputs.elasticIp}` : "Server is ready", "SUCCESS")
   await logDeploymentStep({
     deploymentId,
     jobId: job.id,

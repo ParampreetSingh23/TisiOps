@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 
 import {
+  agentNameForIntent,
   classifyIntent,
   isAccountMemoryQuestion,
   isServerMonitoringIntent,
@@ -10,6 +11,7 @@ import {
 import { runServerMonitoringAgent } from "./server-monitoring.agent"
 import { selectServerMessage } from "./server-orchestrator.agent"
 import { isAiSystemLog } from "./logs.agent"
+import { detectIntent } from "../github/intent"
 import { sanitizeReply } from "../ai/reply"
 import {
   explainInspection,
@@ -41,6 +43,21 @@ assert.equal(classifyIntent("show my servers"), "LIST_SERVERS")
 assert.equal(classifyIntent("show my deployments"), "LIST_DEPLOYMENTS")
 assert.equal(classifyIntent("which server stopped"), "GET_SERVER_STATUS")
 assert.equal(classifyIntent("why did my n8n deployment fail"), "DIAGNOSE_DEPLOYMENT")
+assert.equal(classifyIntent("can i deploy a staging server on tisiops"), "CREATE_STAGING")
+assert.equal(agentNameForIntent(classifyIntent("can i deploy a staging server on tisiops")), "StagingAgent")
+assert.equal(classifyIntent("create staging for this server"), "CREATE_STAGING")
+assert.equal(agentNameForIntent(classifyIntent("create staging for this server")), "StagingAgent")
+assert.equal(classifyIntent("deploy a staging server"), "CREATE_STAGING")
+assert.equal(classifyIntent("build staging"), "CREATE_STAGING")
+assert.equal(classifyIntent("staging environment"), "CREATE_STAGING")
+assert.equal(classifyIntent("make staging from production"), "CREATE_STAGING")
+assert.equal(classifyIntent("clone production to staging"), "CREATE_STAGING")
+assert.equal(classifyIntent("setup staging"), "CREATE_STAGING")
+assert.equal(classifyIntent("what is the status of my n8n deployment?"), "GET_DEPLOYMENT_STATUS")
+assert.equal(agentNameForIntent(classifyIntent("what is the status of my n8n deployment?")), "DeploymentAgent")
+assert.equal(classifyIntent("show terraform plan for this deployment"), "CHECK_TERRAFORM_STATE")
+assert.equal(detectIntent("show terraform plan for this deployment"), "terraform_agent")
+assert.equal(agentNameForIntent(classifyIntent("show terraform plan for this deployment")), "TerraformAgent")
 
 assert.equal(classifyIntent("fix it"), "REPAIR_DEPLOYMENT")
 assert.equal(repairTargetMessageWhenMissing("fix it"), MISSING_REPAIR_TARGET_MESSAGE)

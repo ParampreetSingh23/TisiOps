@@ -19,6 +19,7 @@ export type ConsoleIntent =
   | "github_repo_structure_analysis"
   | "github_cicd_analysis"
   | "github_write_request"
+  | "github_code_profile"
   | "vercel_deployment"
   | "static_site_deployment"
   | "n8n_managed_server_deployment"
@@ -39,6 +40,7 @@ export const GITHUB_INTENTS = [
   "github_repo_structure_analysis",
   "github_cicd_analysis",
   "github_write_request",
+  "github_code_profile",
   "static_site_deployment",
 ] as const
 
@@ -129,6 +131,17 @@ const RULES: Rule[] = [
       /\bmono\s?repo\b|\bproject structure\b|\bstructure\b|\bfolders?\b|\bfrontend (and|or) backend\b|\bbackend (and|or) frontend\b/i.test(
         text
       ),
+  },
+  {
+    intent: "github_code_profile",
+    test: (text) =>
+      // "code profile" / "deployment profile" mean only one thing in a DevOps
+      // console, so they fire without naming a repository.
+      /\b(code profile|deployment profile|build profile)\b/i.test(text) ||
+      (/\bhow is (this|it|the) (repo|repository|app|project|code) built\b|\bhow should (this|it) be deployed\b|\bwhat does (this|it) need to deploy\b/i.test(
+        text
+      ) &&
+        (REPO_WORD.test(text) || GITHUB_WORD.test(text))),
   },
   {
     // Imperative deploys go to the deployment flow; questions about fitness

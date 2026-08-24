@@ -17,6 +17,8 @@ import {
 } from "../queues/redis"
 import { collectServerMetrics } from "../services/servers/metrics-collector"
 import { runMonitoringInstall } from "../services/servers/monitoring-install.runner"
+import { discoverProductionRuntime } from "../services/servers/production-runtime"
+import { runStagingSetup } from "../services/servers/staging-setup"
 import { runServerRepair } from "./handlers/repairServer.handler"
 
 const WORKER_ID = `${hostname()}-${process.pid}`
@@ -40,6 +42,30 @@ async function process_(job: Job<MonitoringJobPayload>): Promise<void> {
       job.data.repairActionId
     )
     log(result.ok ? "Server repair completed" : `Server repair failed: ${result.error}`)
+    return
+  }
+
+  if (job.data.jobType === "DISCOVER_PRODUCTION") {
+    const result = await discoverProductionRuntime({
+      userId: job.data.userId,
+      serverId: job.data.serverId,
+      stagingSessionId: job.data.stagingSessionId,
+    })
+    log(result.ok ? "Production discovery completed" : `Production discovery failed: ${result.error}`)
+    return
+  }
+
+  if (job.data.jobType === "PROVISION_STAGING") {
+    if (!job.data.serverId) {
+      log("NEW_SERVER staging requires AWS provisioning first — deferred (execution in later phase)")
+      return
+    }
+    const result = await runStagingSetup({
+      userId: job.data.userId,
+      targetServerId: job.data.serverId,
+      stagingSessionId: job.data.stagingSessionId,
+    })
+    log(result.ok ? "Staging setup completed" : `Staging setup failed: ${result.error}`)
     return
   }
 

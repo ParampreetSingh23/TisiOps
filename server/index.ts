@@ -103,8 +103,11 @@ import {
   approveRepair,
   classifyIntent,
   diagnoseRepair,
+  handlePendingStagingSource,
+  handleStagingIntent,
   isAccountMemoryQuestion,
   isServerMonitoringIntent,
+  isStagingIntent,
   repairTargetMessageWhenMissing,
   TISIOPS_SCOPE_MESSAGE,
 } from "./services/agents/agent-router"
@@ -1102,6 +1105,26 @@ app.post("/api/chat/sessions/:id/messages", async (req, res) => {
   const intent = detectIntent(content)
   const agentIntent = classifyIntent(content)
 
+  const pendingStagingSource = await handlePendingStagingSource({
+    userId: user.id,
+    sessionId,
+    content,
+    intent: agentIntent,
+    clerkUserId: user.clerkId,
+    users: clerkClient.users,
+  })
+  if (pendingStagingSource) {
+    await appendTurn({
+      userId: user.id,
+      sessionId,
+      userContent: content,
+      assistantContent: pendingStagingSource.flow.message,
+    })
+
+    res.json({ success: true, data: pendingStagingSource.flow })
+    return
+  }
+
   if (agentIntent === "OUT_OF_SCOPE") {
     await appendTurn({
       userId: user.id,
@@ -1137,6 +1160,30 @@ app.post("/api/chat/sessions/:id/messages", async (req, res) => {
       success: true,
       data: { type: "answer", intent: agentIntent, message: replyMessage },
     })
+    return
+  }
+
+  // Staging is classified from the current message before active deployment
+  // context is loaded. An open n8n/Terraform deployment must not hijack
+  // "deploy a staging server" into a deployment-status answer.
+  if (isStagingIntent(agentIntent)) {
+    const result = await handleStagingIntent({
+      userId: user.id,
+      sessionId,
+      intent: agentIntent,
+      content,
+      clerkUserId: user.clerkId,
+      users: clerkClient.users,
+    })
+
+    await appendTurn({
+      userId: user.id,
+      sessionId,
+      userContent: content,
+      assistantContent: result.flow.message,
+    })
+
+    res.json({ success: true, data: result.flow })
     return
   }
 

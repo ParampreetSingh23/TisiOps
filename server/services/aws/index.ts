@@ -22,6 +22,11 @@ import { appendLog } from "../deployments/index"
 import { buildProgress, type N8nProgress } from "../n8n/progress"
 import { getAwsConnectionStatus } from "../provider-connections/index"
 import {
+  missingUserSecrets,
+  stagingPayloadFromPlan,
+} from "../servers/staging-execution"
+import type { FinalStagingPlan } from "../servers/staging-planning"
+import {
   AWS_SERVER_STEPS,
   AWS_SERVER_TEMPLATE,
   validateAwsServerConfig,
@@ -56,6 +61,10 @@ const UNFINISHED: DeploymentStatus[] = [
 
 export type CreateResult =
   | { ok: true; deploymentId: string }
+  | { ok: false; error: string }
+
+export type StagingAwsCreateResult =
+  | { ok: true; deploymentId: string; finalPlan: FinalStagingPlan & { stagingDeploymentId: string } }
   | { ok: false; error: string }
 
 export async function countActiveAwsServers(userId: string): Promise<number> {
@@ -166,6 +175,195 @@ export async function createAwsServerDeployment(input: {
   })
 
   return { ok: true, deploymentId: deployment.id }
+}
+
+function isFinalStagingPlan(value: unknown): value is FinalStagingPlan {
+  const plan = value as Partial<FinalStagingPlan> | null
+  return Boolean(
+    plan &&
+      plan.target === "NEW_SERVER" &&
+      plan.provider === "AWS" &&
+      typeof plan.region === "string" &&
+      typeof plan.instanceType === "string" &&
+      typeof plan.diskGb === "number" &&
+      typeof plan.appPort === "number" &&
+      Array.isArray(plan.requiredEnvVars)
+  )
+}
+
+function stagingServerName(plan: FinalStagingPlan, stagingSessionId: string): string {
+  const base = plan.repository ? `${plan.repository}-staging` : "staging-server"
+  return `${base}-${stagingSessionId.slice(-6)}`
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/-+/g, "-")
+}
+
+export async function createStagingAwsDeployment(input: {
+  userId: string
+  sourceServerId: string | null
+  stagingSessionId: string
+  finalPlan: unknown
+}): Promise<StagingAwsCreateResult> {
+  const session = await prisma.stagingSession.findFirst({
+    where: {
+      id: input.stagingSessionId,
+      userId: input.userId,
+      ...(input.sourceServerId ? { sourceServerId: input.sourceServerId } : {}),
+    },
+    select: { id: true },
+  })
+  if (!session) return { ok: false, error: "Staging plan not found." }
+
+  if (input.sourceServerId) {
+    const source = await prisma.server.findFirst({
+      where: { id: input.sourceServerId, userId: input.userId },
+      select: { id: true },
+    })
+    if (!source) return { ok: false, error: "Source server not found." }
+  }
+
+  if (!isFinalStagingPlan(input.finalPlan)) {
+    return { ok: false, error: "Only NEW_SERVER/AWS staging plans can be executed." }
+  }
+
+  const existingId = (input.finalPlan as FinalStagingPlan & { stagingDeploymentId?: string })
+    .stagingDeploymentId
+  if (existingId) {
+    const existing = await prisma.deployment.findFirst({
+      where: { id: existingId, userId: input.userId, type: "AWS_SERVER" },
+      select: { id: true },
+    })
+    if (existing) {
+      return {
+        ok: true,
+        deploymentId: existing.id,
+        finalPlan: { ...input.finalPlan, stagingDeploymentId: existing.id },
+      }
+    }
+  }
+
+  const payload = stagingPayloadFromPlan(input.stagingSessionId, input.finalPlan)
+  if (!payload) {
+    return { ok: false, error: "STAGING_REPOSITORY_REQUIRED" }
+  }
+
+  const missingSecrets = missingUserSecrets(payload.requiredEnvVars)
+  if (missingSecrets.length > 0) {
+    return {
+      ok: false,
+      error: `AWAITING_SECRETS: ${missingSecrets.join(", ")}`,
+    }
+  }
+
+  const connection = await getAwsConnectionStatus(input.userId)
+  if (!connection.connected) {
+    return {
+      ok: false,
+      error:
+        "Connect an AWS account before creating staging. TisiOps builds this server in your account, not its own.",
+    }
+  }
+
+  const config: AwsServerConfig = {
+    projectName: stagingServerName(input.finalPlan, input.stagingSessionId),
+    region: input.finalPlan.region,
+    instanceType: input.finalPlan.instanceType,
+    volumeSizeGb: input.finalPlan.diskGb,
+  }
+
+  const duplicate = await prisma.deployment.findFirst({
+    where: {
+      userId: input.userId,
+      type: "AWS_SERVER",
+      appName: config.projectName,
+      status: { in: UNFINISHED },
+    },
+    select: { id: true },
+  })
+  if (duplicate) {
+    return {
+      ok: true,
+      deploymentId: duplicate.id,
+      finalPlan: { ...input.finalPlan, stagingDeploymentId: duplicate.id },
+    }
+  }
+
+  const deployment = await prisma.deployment.create({
+    data: {
+      userId: input.userId,
+      type: "AWS_SERVER",
+      provider: "USER_AWS_ACCOUNT",
+      appName: config.projectName,
+      repositoryName: input.finalPlan.repository ?? "",
+      repositoryOwner: input.finalPlan.owner ?? "",
+      repositoryUrl: payload.repositoryUrl,
+      branch: input.finalPlan.stagingBranch,
+      framework: input.finalPlan.runtime,
+      template: AWS_SERVER_TEMPLATE,
+      status: "PENDING",
+      costApprovedAt: new Date(),
+      statusDetail: "Queued. A TisiOps worker will create staging.",
+    },
+  })
+
+  const finalPlan = { ...input.finalPlan, stagingDeploymentId: deployment.id }
+
+  await prisma.stagingSession.update({
+    where: { id: input.stagingSessionId },
+    data: {
+      approvedAt: new Date(),
+      finalPlanJson: finalPlan as never,
+    },
+  })
+
+  await appendLog(deployment.id, "Staging plan approved", "SUCCESS")
+  await appendLog(deployment.id, COST_WARNING, "WARNING")
+  await appendLog(
+    deployment.id,
+    "Staging will be exposed on HTTP at the Elastic IP. No DNS or TLS is configured.",
+    "WARNING"
+  )
+
+  const queued = await createAndQueueJob({
+    deploymentId: deployment.id,
+    type: "AWS_APP_DEPLOYMENT",
+    payload: {
+      ...config,
+      staging: payload,
+    },
+  })
+
+  await appendLog(
+    deployment.id,
+    "Deployment job created",
+    "INFO",
+    null,
+    queued.job.id
+  )
+
+  if (!queued.ok) {
+    await prisma.deployment.update({
+      where: { id: deployment.id },
+      data: { status: "FAILED", statusDetail: QUEUE_UNAVAILABLE },
+    })
+    return { ok: false, error: QUEUE_UNAVAILABLE }
+  }
+
+  await appendLog(
+    deployment.id,
+    "Job added to Redis queue",
+    "INFO",
+    null,
+    queued.job.id
+  )
+
+  await prisma.deployment.update({
+    where: { id: deployment.id },
+    data: { status: "QUEUED", statusDetail: "Waiting for a TisiOps worker." },
+  })
+
+  return { ok: true, deploymentId: deployment.id, finalPlan }
 }
 
 export async function getAwsServerProgress(

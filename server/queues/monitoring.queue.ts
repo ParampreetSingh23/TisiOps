@@ -21,6 +21,18 @@ export type MonitoringJobPayload =
       repairActionId: string
       jobType: "REPAIR_SERVER"
     }
+  | {
+      userId: string
+      serverId: string
+      stagingSessionId: string
+      jobType: "DISCOVER_PRODUCTION"
+    }
+  | {
+      userId: string
+      serverId: string | null
+      stagingSessionId: string
+      jobType: "PROVISION_STAGING"
+    }
 
 const DEFAULT_JOB_OPTIONS: JobsOptions = {
   attempts: 2,
@@ -38,12 +50,18 @@ export function serverMetricsJobId(serverId: string): string {
 function monitoringQueue(): Queue<MonitoringJobPayload> {
   if (!queue) {
     queue = new Queue<MonitoringJobPayload>(MONITORING_QUEUE, {
-      connection: createRedis("tisiops-monitoring-api", { failFast: false }),
+      connection: createRedis("tisiops-monitoring-api"),
       streams: { events: { maxLen: 100 } },
       defaultJobOptions: DEFAULT_JOB_OPTIONS,
     })
   }
   return queue
+}
+
+async function readyQueue(): Promise<Queue<MonitoringJobPayload>> {
+  const q = monitoringQueue()
+  await q.waitUntilReady()
+  return q
 }
 
 export type EnqueueResult =
@@ -67,7 +85,7 @@ export async function enqueueMonitoringInstall(
   }
 
   try {
-    const job = await monitoringQueue().add(
+    const job = await (await readyQueue()).add(
       "ENABLE_SERVER_MONITORING",
       { serverId, monitoringId, jobType: "ENABLE_SERVER_MONITORING" },
       { jobId: `monitoring-install:${serverId}` }
@@ -98,7 +116,7 @@ export async function ensureServerMetricsSchedule(
   }
 
   try {
-    const job = await monitoringQueue().upsertJobScheduler(
+    const job = await (await readyQueue()).upsertJobScheduler(
       serverMetricsJobId(serverId),
       { every: 60_000 },
       {
@@ -116,7 +134,7 @@ export async function ensureServerMetricsSchedule(
 export async function removeServerMetricsSchedule(serverId: string): Promise<void> {
   if (!isRedisConfigured()) return
   try {
-    await monitoringQueue().removeJobScheduler(serverMetricsJobId(serverId))
+    await (await readyQueue()).removeJobScheduler(serverMetricsJobId(serverId))
   } catch {
     // Best-effort: the collector also stops itself when monitoring is not ACTIVE.
   }
@@ -136,10 +154,60 @@ export async function enqueueServerRepair(
     return { ok: false, error: "The monitoring queue is not configured." }
   }
   try {
-    const job = await monitoringQueue().add(
+    const job = await (await readyQueue()).add(
       "REPAIR_SERVER",
       { serverId, repairPlanId, repairActionId, jobType: "REPAIR_SERVER" },
       { jobId: `server-repair:${repairPlanId}` }
+    )
+    return { ok: true, queueJobId: String(job.id) }
+  } catch (error) {
+    return { ok: false, error: describeRedisError(error) }
+  }
+}
+
+/**
+ * Queues a read-only production discovery for one staging session. Idempotent
+ * per session: the jobId folds the staging session in, so a repeated trigger
+ * cannot queue the same discovery twice.
+ */
+export async function enqueueProductionDiscovery(
+  userId: string,
+  serverId: string,
+  stagingSessionId: string
+): Promise<EnqueueResult> {
+  if (!isRedisConfigured()) {
+    return { ok: false, error: "The monitoring queue is not configured." }
+  }
+  try {
+    const job = await (await readyQueue()).add(
+      "DISCOVER_PRODUCTION",
+      { userId, serverId, stagingSessionId, jobType: "DISCOVER_PRODUCTION" },
+      { jobId: `production-discovery:${stagingSessionId}` }
+    )
+    return { ok: true, queueJobId: String(job.id) }
+  } catch (error) {
+    return { ok: false, error: describeRedisError(error) }
+  }
+}
+
+/**
+ * Queues staging provisioning after the user approves the plan. Idempotent per
+ * staging session. The worker owns execution; the Staging Agent stops at the
+ * structured plan.
+ */
+export async function enqueueStagingProvision(
+  userId: string,
+  serverId: string | null,
+  stagingSessionId: string
+): Promise<EnqueueResult> {
+  if (!isRedisConfigured()) {
+    return { ok: false, error: "The monitoring queue is not configured." }
+  }
+  try {
+    const job = await (await readyQueue()).add(
+      "PROVISION_STAGING",
+      { userId, serverId, stagingSessionId, jobType: "PROVISION_STAGING" },
+      { jobId: `staging-provision:${stagingSessionId}` }
     )
     return { ok: true, queueJobId: String(job.id) }
   } catch (error) {

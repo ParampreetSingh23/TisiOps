@@ -2,6 +2,7 @@ import {
   analyzeRepository,
   readBranches,
   SERVER_ON_VERCEL_EXPLANATION,
+  type CodeProfile,
   type RepoAnalysis,
   type ServiceAnalysis,
 } from "./analyze"
@@ -98,6 +99,13 @@ export type GithubAgentResponse = (
       intent: GithubIntent
       message: string
       analysis: RepoAnalysis
+    }
+  | {
+      type: "github_code_profile"
+      intent: GithubIntent
+      message: string
+      analysis: RepoAnalysis
+      codeProfile: CodeProfile
     }
   | {
       type: "github_cicd_analysis"
@@ -494,6 +502,21 @@ export async function runGithubAgent(input: {
       repository: analysis.repository,
       workflows: analysis.workflows,
       plan: CICD_PLAN,
+    }
+  }
+
+  if (intent === "github_code_profile") {
+    const profile = analysis.codeProfile
+    const deps = profile.dependencies.length > 0
+      ? profile.dependencies.join(", ")
+      : "None detected"
+    return {
+      type: "github_code_profile",
+      intent,
+      context,
+      message: `${profile.repository}: ${profile.architecture} (${analysis.framework ?? "unknown framework"}). Runtime ${profile.runtime ?? "unknown"}, package manager ${profile.packageManager ?? "unknown"}. Build ${profile.build ?? "none"}, start ${profile.start ?? "none"}, port ${profile.port ?? "n/a"}. Deps: ${deps}. Deploy: ${profile.deployment}.`,
+      analysis,
+      codeProfile: profile,
     }
   }
 

@@ -7,6 +7,7 @@ import { GithubCards } from "@/components/dashboard/github-cards"
 import { Markdown } from "@/components/dashboard/markdown"
 import { N8nFlow } from "@/components/deployment/n8n-flow"
 import { PostgresFlow } from "@/components/deployment/postgres-flow"
+import { StagingCards, type StagingData } from "@/components/dashboard/staging-cards"
 import { VercelFlow } from "@/components/deployment/vercel-flow"
 import { UsageMeter } from "@/components/dashboard/ai-usage-meter"
 import { apiFetch } from "@/lib/api"
@@ -45,6 +46,7 @@ type ChatResponse =
       needsApproval: boolean
       repairActions: unknown[]
     }
+  | ({ type: "staging_flow"; intent: string; message: string } & Partial<StagingData>)
   | GithubAgentResponse
 
 /**
@@ -61,6 +63,8 @@ type Message = {
   opensPostgresFlow?: boolean
   /** github_agent findings for this turn. Live only — never persisted. */
   github?: GithubAgentResponse
+  /** staging_flow findings for this turn. Live only — never persisted. */
+  staging?: StagingData
   /** The question that produced `github`, so a card can ask a follow-up. */
   question?: string
 }
@@ -228,6 +232,9 @@ export function AiConsole({ firstName }: { firstName: string | null }) {
           ...(response.type.startsWith("github_") || response.type === "error"
             ? { github: response as GithubAgentResponse, question: content }
             : {}),
+          ...(response.type === "staging_flow"
+            ? { staging: response as StagingData }
+            : {}),
         },
       ])
     } catch (caught) {
@@ -350,6 +357,9 @@ export function AiConsole({ firstName }: { firstName: string | null }) {
                             question={message.question ?? ""}
                             onAsk={(text) => void send(text)}
                           />
+                        ) : null}
+                        {message.staging ? (
+                          <StagingCards data={message.staging} onAsk={(text) => void send(text)} />
                         ) : null}
                       </div>
                     </div>

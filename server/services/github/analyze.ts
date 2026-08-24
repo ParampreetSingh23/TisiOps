@@ -55,6 +55,48 @@ type PackageJson = {
   scripts?: Record<string, string>
   dependencies?: Record<string, string>
   devDependencies?: Record<string, string>
+  engines?: { node?: string }
+}
+
+export type CodeDependency =
+  | "Postgres"
+  | "Redis"
+  | "MySQL"
+  | "MongoDB"
+  | "SQLite"
+
+export type DockerInfo = {
+  hasDockerfile: boolean
+  compose: boolean
+  /** Service names declared in docker-compose.yml, e.g. ["web", "db"]. */
+  services: string[]
+  /** Mapped ports, e.g. ["3000:3000"]. */
+  ports: string[]
+  healthcheck: boolean
+  /** Dockerfile EXPOSE ports. */
+  exposedPorts: string[]
+}
+
+export type ConfigFiles = {
+  caddyfile: boolean
+  nginx: boolean
+}
+
+/** How the code expects to be deployed, in one flat shape. */
+export type CodeProfile = {
+  repository: string
+  owner: string
+  architecture: string
+  runtime: string | null
+  nodeVersion: string | null
+  packageManager: string | null
+  build: string | null
+  start: string | null
+  port: number | null
+  dependencies: string[]
+  services: string[]
+  environment: string[]
+  deployment: string
 }
 
 export type ProjectType =
@@ -74,6 +116,8 @@ export type ServiceAnalysis = {
   projectType: ProjectType
   framework: string | null
   runtime: string | null
+  /** Expected Node major from `.nvmrc` or `engines.node`, e.g. "22". */
+  nodeVersion: string | null
   packageManager: string | null
   buildCommand: string | null
   startCommand: string | null
@@ -86,6 +130,11 @@ export type ServiceAnalysis = {
   /** Why Vercel is not the right home for this service, when it is not. */
   vercelNote: string | null
   missing: string[]
+  /** Runtime dependencies, e.g. ["Postgres", "Redis"]. */
+  dependencies: CodeDependency[]
+  docker: DockerInfo
+  configFiles: ConfigFiles
+  healthEndpoint: string | null
 }
 
 export type RepoAnalysis = {
@@ -101,6 +150,7 @@ export type RepoAnalysis = {
   // answer ("what framework is this?") do not have to walk the list.
   framework: string | null
   runtime: string | null
+  nodeVersion: string | null
   packageManager: string | null
   buildCommand: string | null
   startCommand: string | null
@@ -112,6 +162,13 @@ export type RepoAnalysis = {
   deployability: Deployability
   recommendedTarget: string
   missing: string[]
+
+  // Repo-wide view: the union of everything any service needs.
+  dependencies: CodeDependency[]
+  docker: DockerInfo
+  configFiles: ConfigFiles
+  healthEndpoint: string | null
+  codeProfile: CodeProfile
 }
 
 export const VERCEL_TARGET = "TisiOps Managed Vercel Preview"
@@ -277,6 +334,11 @@ type DirectoryFacts = {
   paths: string[]
   packageJson: PackageJson | null
   envExample: string | null
+  nvmrc: string | null
+  compose: string | null
+  dockerfile: string | null
+  caddyfile: string | null
+  nginx: string | null
 }
 
 function detectFramework(facts: DirectoryFacts): string | null {
@@ -316,6 +378,143 @@ function detectPackageManager(paths: string[]): string | null {
   if (paths.includes("bun.lockb")) return "bun"
   if (paths.includes("package-lock.json")) return "npm"
   return null
+}
+
+/** Expected Node major from `.nvmrc` or `engines.node`, e.g. "22". */
+export function detectNodeVersion(
+  pkg: PackageJson | null,
+  nvmrc: string | null
+): string | null {
+  const engines = pkg?.engines as { node?: string } | undefined
+  const source = nvmrc?.trim() || engines?.node?.trim()
+  if (!source) return null
+  const match = source.match(/(\d+)/)
+  return match ? match[1] : null
+}
+
+const DEP_PACKAGES: Record<string, CodeDependency> = {
+  pg: "Postgres",
+  "pg-promise": "Postgres",
+  postgres: "Postgres",
+  postgresql: "Postgres",
+  "@prisma/client": "Postgres",
+  redis: "Redis",
+  ioredis: "Redis",
+  mysql: "MySQL",
+  mysql2: "MySQL",
+  mariadb: "MySQL",
+  mongodb: "MongoDB",
+  mongoose: "MongoDB",
+  "better-sqlite3": "SQLite",
+  sqlite3: "SQLite",
+}
+
+const DEP_IMAGES: [string, CodeDependency][] = [
+  ["postgres", "Postgres"],
+  ["redis", "Redis"],
+  ["mysql", "MySQL"],
+  ["mariadb", "MySQL"],
+  ["mongo", "MongoDB"],
+]
+
+function orderedDeps(set: Set<CodeDependency>): CodeDependency[] {
+  const order: CodeDependency[] = ["Postgres", "Redis", "MySQL", "MongoDB", "SQLite"]
+  return order.filter((dep) => set.has(dep))
+}
+
+/** Runtime dependencies declared in package.json dependencies only. */
+export function dependenciesFromPackage(pkg: PackageJson | null): CodeDependency[] {
+  const names = Object.keys({
+    ...pkg?.dependencies,
+    ...pkg?.devDependencies,
+  })
+  const found = new Set<CodeDependency>()
+  for (const name of names) {
+    const dep = DEP_PACKAGES[name]
+    if (dep) found.add(dep)
+  }
+  return orderedDeps(found)
+}
+
+/** Runtime dependencies implied by docker-compose image names. */
+export function dependenciesFromCompose(
+  compose: string | null
+): CodeDependency[] {
+  if (!compose) return []
+  const found = new Set<CodeDependency>()
+  for (const [image, dep] of DEP_IMAGES) {
+    if (new RegExp(`\\b${image}(?::|\\s)`).test(compose)) found.add(dep)
+  }
+  return orderedDeps(found)
+}
+
+export function parseCompose(content: string | null): {
+  services: string[]
+  ports: string[]
+  healthcheck: boolean
+} {
+  if (!content) return { services: [], ports: [], healthcheck: false }
+  const services = new Set<string>()
+  const ports = new Set<string>()
+  let healthcheck = false
+  for (const raw of content.split("\n")) {
+    const indent = raw.match(/^ */)?.[0].length ?? 0
+    const line = raw.trim()
+    // Top-level service names sit at exactly two spaces: "  web:".
+    if (indent === 2 && /^[A-Za-z0-9_-]+:\s*$/.test(line)) {
+      services.add(line.replace(/:\s*$/, ""))
+    }
+    const port = line.match(/^-\s*"?(\d{2,5}(?::\d{2,5})?)"?$/)
+    if (indent >= 4 && port) ports.add(port[1]!)
+    if (/^healthcheck\s*:/i.test(line)) healthcheck = true
+  }
+  return { services: [...services], ports: [...ports], healthcheck }
+}
+
+export function exposedPorts(dockerfile: string | null): string[] {
+  if (!dockerfile) return []
+  const out = new Set<string>()
+  for (const line of dockerfile.split("\n")) {
+    const match = line.match(/^\s*EXPOSE\s+([0-9\s]+)\s*$/i)
+    if (match) {
+      for (const port of match[1]!.split(/\s+/).filter(Boolean)) out.add(port)
+    }
+  }
+  return [...out]
+}
+
+/** A health endpoint path, when the files name one, e.g. "/health". */
+export function healthEndpoint(
+  compose: string | null,
+  dockerfile: string | null
+): string | null {
+  const haystack = `${compose ?? ""}\n${dockerfile ?? ""}`
+  const match = haystack.match(/\/(?:api\/)?(?:healthz?|readyz?|livez?|ping)\b/i)
+  return match?.[0] ?? null
+}
+
+export function buildCodeProfile(
+  repository: string,
+  owner: string,
+  primary: ServiceAnalysis,
+  deps: CodeDependency[],
+  repoHasCompose: boolean
+): CodeProfile {
+  return {
+    repository,
+    owner,
+    architecture: primary.projectType === "static" ? "website" : primary.projectType,
+    runtime: primary.runtime,
+    nodeVersion: primary.nodeVersion,
+    packageManager: primary.packageManager,
+    build: primary.buildCommand,
+    start: primary.startCommand,
+    port: primary.appPort,
+    dependencies: deps,
+    services: primary.docker.services,
+    environment: primary.envKeys,
+    deployment: repoHasCompose ? "Docker Compose" : primary.recommendedTarget,
+  }
 }
 
 function detectProjectType(
@@ -421,6 +620,23 @@ function analyseDirectory(facts: DirectoryFacts): ServiceAnalysis {
 
   const buildCommand = scripts.build ? "npm run build" : null
 
+  const docker = parseCompose(facts.compose)
+  const dockerInfo: DockerInfo = {
+    hasDockerfile: facts.paths.includes("Dockerfile") || Boolean(facts.dockerfile),
+    compose: Boolean(facts.compose),
+    services: docker.services,
+    ports: docker.ports,
+    healthcheck: docker.healthcheck,
+    exposedPorts: exposedPorts(facts.dockerfile),
+  }
+
+  const dependencies = orderedDeps(
+    new Set([
+      ...dependenciesFromPackage(facts.packageJson),
+      ...dependenciesFromCompose(facts.compose),
+    ])
+  )
+
   return {
     name: facts.path === "" ? "root" : facts.path,
     path: facts.path,
@@ -435,6 +651,7 @@ function analyseDirectory(facts: DirectoryFacts): ServiceAnalysis {
           : framework === "Java"
             ? "Java"
             : null,
+    nodeVersion: detectNodeVersion(facts.packageJson, facts.nvmrc),
     packageManager: detectPackageManager(facts.paths),
     buildCommand,
     startCommand: scripts.start
@@ -445,6 +662,13 @@ function analyseDirectory(facts: DirectoryFacts): ServiceAnalysis {
     appPort: portFrom(facts.envExample),
     envKeys,
     envSources,
+    dependencies,
+    docker: dockerInfo,
+    configFiles: {
+      caddyfile: Boolean(facts.caddyfile),
+      nginx: Boolean(facts.nginx),
+    },
+    healthEndpoint: healthEndpoint(facts.compose, facts.dockerfile),
     ...classify({ framework, projectType, buildCommand, envKeys }),
   }
 }
@@ -537,26 +761,72 @@ export async function analyzeRepository(
         .map((path) => path.slice(prefix.length))
         .filter((path) => path !== "")
 
-      const [packageJsonRaw, envExample] = await Promise.all([
-        local.includes("package.json")
-          ? readFile(
-              token,
-              input.owner,
-              input.repo,
-              `${prefix}package.json`,
-              input.branch
-            )
-          : Promise.resolve(null),
-        local.includes(".env.example")
-          ? readFile(
-              token,
-              input.owner,
-              input.repo,
-              `${prefix}.env.example`,
-              input.branch
-            )
-          : Promise.resolve(null),
-      ])
+      const [packageJsonRaw, envExample, nvmrcRaw, composeRaw, dockerfileRaw, caddyRaw, nginxRaw] =
+        await Promise.all([
+          local.includes("package.json")
+            ? readFile(
+                token,
+                input.owner,
+                input.repo,
+                `${prefix}package.json`,
+                input.branch
+              )
+            : Promise.resolve(null),
+          local.includes(".env.example")
+            ? readFile(
+                token,
+                input.owner,
+                input.repo,
+                `${prefix}.env.example`,
+                input.branch
+              )
+            : Promise.resolve(null),
+          local.includes(".nvmrc")
+            ? readFile(
+                token,
+                input.owner,
+                input.repo,
+                `${prefix}.nvmrc`,
+                input.branch
+              )
+            : Promise.resolve(null),
+          local.includes("docker-compose.yml")
+            ? readFile(
+                token,
+                input.owner,
+                input.repo,
+                `${prefix}docker-compose.yml`,
+                input.branch
+              )
+            : Promise.resolve(null),
+          local.includes("Dockerfile")
+            ? readFile(
+                token,
+                input.owner,
+                input.repo,
+                `${prefix}Dockerfile`,
+                input.branch
+              )
+            : Promise.resolve(null),
+          local.includes("Caddyfile")
+            ? readFile(
+                token,
+                input.owner,
+                input.repo,
+                `${prefix}Caddyfile`,
+                input.branch
+              )
+            : Promise.resolve(null),
+          local.includes("nginx.conf")
+            ? readFile(
+                token,
+                input.owner,
+                input.repo,
+                `${prefix}nginx.conf`,
+                input.branch
+              )
+            : Promise.resolve(null),
+        ])
 
       let packageJson: PackageJson | null = null
       try {
@@ -572,6 +842,11 @@ export async function analyzeRepository(
         paths: local,
         packageJson,
         envExample,
+        nvmrc: nvmrcRaw,
+        compose: composeRaw,
+        dockerfile: dockerfileRaw,
+        caddyfile: caddyRaw,
+        nginx: nginxRaw,
       })
     })
   )
@@ -595,7 +870,22 @@ export async function analyzeRepository(
     services.find((service) => service.vercelReady) ??
     services.find((service) => service.projectType !== "unknown") ??
     services[0] ??
-    analyseDirectory({ path: "", paths, packageJson: null, envExample: null })
+    analyseDirectory({
+      path: "",
+      paths,
+      packageJson: null,
+      envExample: null,
+      nvmrc: null,
+      compose: null,
+      dockerfile: null,
+      caddyfile: null,
+      nginx: null,
+    })
+
+  const dependencies = orderedDeps(
+    new Set(services.flatMap((service) => service.dependencies))
+  )
+  const repoHasCompose = services.some((service) => service.docker.compose)
 
   return {
     repository: input.repo,
@@ -610,6 +900,7 @@ export async function analyzeRepository(
 
     framework: primary.framework,
     runtime: primary.runtime,
+    nodeVersion: primary.nodeVersion,
     packageManager: primary.packageManager,
     buildCommand: primary.buildCommand,
     startCommand: primary.startCommand,
@@ -622,5 +913,34 @@ export async function analyzeRepository(
     deployability: primary.deployability,
     recommendedTarget: primary.recommendedTarget,
     missing: primary.missing,
+
+    dependencies,
+    docker: {
+      hasDockerfile: primary.docker.hasDockerfile,
+      compose: repoHasCompose,
+      services: Array.from(
+        new Set(services.flatMap((service) => service.docker.services))
+      ),
+      ports: Array.from(
+        new Set(services.flatMap((service) => service.docker.ports))
+      ),
+      healthcheck: services.some((service) => service.docker.healthcheck),
+      exposedPorts: Array.from(
+        new Set(services.flatMap((service) => service.docker.exposedPorts))
+      ),
+    },
+    configFiles: {
+      caddyfile: services.some((service) => service.configFiles.caddyfile),
+      nginx: services.some((service) => service.configFiles.nginx),
+    },
+    healthEndpoint:
+      services.find((service) => service.healthEndpoint)?.healthEndpoint ?? null,
+    codeProfile: buildCodeProfile(
+      input.repo,
+      input.owner,
+      primary,
+      dependencies,
+      repoHasCompose
+    ),
   }
 }

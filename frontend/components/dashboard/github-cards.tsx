@@ -571,5 +571,40 @@ export function GithubCards({
     )
   }
 
+  if (response.type === "github_code_profile") {
+    const profile = response.codeProfile
+    return (
+      <div className={`${card} mt-3`}>
+        <div className="flex items-center gap-2.5">
+          <h4 className="font-mono text-sm font-semibold text-ink-strong">
+            {profile.repository}
+          </h4>
+          <span className={MUTED_BADGE}>Code Profile</span>
+        </div>
+
+        <dl className="mt-3 grid gap-x-6 gap-y-1.5 sm:grid-cols-2">
+          <Row label="Architecture" value={profile.architecture} />
+          <Row label="Runtime" value={profile.runtime ?? "Not detected"} />
+          <Row
+            label="Package Manager"
+            value={profile.packageManager ?? "Not detected"}
+          />
+          <Row label="Build" value={profile.build ?? "None found"} />
+          <Row label="Start" value={profile.start ?? "None found"} />
+          <Row label="Port" value={profile.port ? String(profile.port) : "n/a"} />
+          <Row
+            label="Dependencies"
+            value={
+              profile.dependencies.length > 0
+                ? profile.dependencies.join(", ")
+                : "None detected"
+            }
+          />
+          <Row label="Deployment" value={profile.deployment} />
+        </dl>
+      </div>
+    )
+  }
+
   return null
 }

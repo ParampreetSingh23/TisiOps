@@ -66,13 +66,19 @@
     "check:limits": "tsx services/ai/limits.check.ts",
     "check:lifecycle": "tsx services/deployments/lifecycle.check.ts",
     "check:intent": "tsx services/github/intent.check.ts",
+    "check:code-profile": "tsx services/github/code-profile.check.ts",
     "check:templates": "tsx services/templates/templates.check.ts",
     "check:admin-templates": "tsx services/templates/admin-templates.check.ts",
     "check:template-builder": "tsx services/templates/template-builder.check.ts",
     "check:server-status": "tsx services/servers/server-status.check.ts",
+    "check:runtime": "tsx services/servers/production-runtime.check.ts",
+    "check:blueprint": "tsx services/servers/production-blueprint.check.ts",
+    "check:staging-recommendation": "tsx services/servers/staging-recommendation.check.ts",
+    "check:staging-planning": "tsx services/servers/staging-planning.check.ts",
     "check:monitoring": "tsx services/servers/monitoring-installer.check.ts",
     "check:metrics": "tsx services/servers/metrics-collector.check.ts",
-    "check:monitoring-agent": "tsx services/agents/monitoring-health.check.ts"
+    "check:monitoring-agent": "tsx services/agents/monitoring-health.check.ts",
+    "check:staging": "tsx --env-file=.env services/agents/staging.check.ts"
   },
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.1106.0",

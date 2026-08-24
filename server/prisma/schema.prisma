@@ -185,6 +185,29 @@ enum ServerRepairStatus {
   PLANNED_NOT_IMPLEMENTED
 }
 
+/// Pre-execution lifecycle for a staging session. Nothing past PLAN_READY runs
+/// on a server yet — this is the foundation that models what the user wants,
+/// not the provisioning that will eventually run it.
+enum StagingStatus {
+  CREATED
+  SELECT_SOURCE_TYPE
+  SELECT_SOURCE
+  ANALYSING
+  SOURCE_DISCOVERY_FAILED
+  SOURCE_READY
+  PLAN_READY
+  TARGET_SELECTED
+  PLAN_NOT_READY
+  READY
+  FAILED
+  CANCELLED
+}
+
+enum StagingSourceType {
+  STAGING_SOURCE_SERVER
+  STAGING_SOURCE_REPOSITORY
+}
+
 enum HostingMode {
   TISIOPS_MANAGED
 }
@@ -281,6 +304,7 @@ model User {
   aiGatewayLogs    AiGatewayRequestLog[]
   templates        AdminTemplate[]
   terminalSessions TerminalSession[]
+  stagingSessions  StagingSession[]
 
   @@index([email])
 }
@@ -590,9 +614,65 @@ model Server {
   serverMonitoring ServerMonitoring?
   metricSnapshot   ServerMetricSnapshot?
   repairPlans      ServerRepairPlan[]
+  stagingSessions  StagingSession[]
 
   @@index([userId, createdAt])
   @@index([deploymentId])
+}
+
+/// "Create staging from this production server." The source server is the
+/// reference; the plan and status lifecycle record what the user wants. No SSH,
+/// no provisioning yet — this is the staging concept, not the staging engine.
+model StagingSession {
+  id      String @id @default(cuid())
+  userId  String
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceType StagingSourceType?
+  /// The production server this staging set is created from, when sourceType is server.
+  sourceServerId String?
+  sourceServer   Server? @relation(fields: [sourceServerId], references: [id], onDelete: Cascade)
+  /// GitHub full name, e.g. "owner/repo", when sourceType is repository.
+  sourceRepositoryId String?
+  sourceBranch       String?
+
+  title       String
+  status      StagingStatus @default(CREATED)
+  /// Staging target, e.g. "new_instance", "same_server", "docker_compose".
+  target      String?
+  targetLabel String?
+  /// Parsed analysis: what the production server runs, what a staging copy
+  /// needs. Never contains credentials.
+  planJson Json?
+
+  /// Read-only production discovery result: what is actually running on the
+  /// source server. Written by the Discovery Worker, never by an HTTP request.
+  runtimeJson  Json?
+  discoveredAt DateTime?
+  discoveryError String?
+
+  /// Code analysis profile for the repository the server runs, when known.
+  codeProfileJson Json?
+  /// The combined production blueprint (code + runtime + deployment + monitoring).
+  blueprintJson Json?
+  /// The isolated staging recommendation derived from production.
+  stagingJson Json?
+
+  /// Selected target server (for EXISTING_SERVER), and the target choice.
+  targetServerId String?
+  /// The final staging plan the user reviews and approves.
+  finalPlanJson Json?
+  /// When the user approved the staging plan. Null until approval.
+  approvedAt DateTime?
+
+  sessionId String?
+  session   AiChatSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([userId, sourceServerId])
+  @@index([userId, sourceRepositoryId])
 }
 
 model TerminalSession {
@@ -846,6 +926,7 @@ model AiChatSession {
   latestRecommendedAction String?
 
   agentRuns AgentRun[]
+  stagingSessions StagingSession[]
 
   @@index([userId, updatedAt])
 }

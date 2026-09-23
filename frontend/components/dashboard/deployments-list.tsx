@@ -214,9 +214,12 @@ export function DeploymentsList() {
                 </div>
 
                 <p className="mt-1 truncate font-mono text-xs text-ink-muted">
-                  {deployment.type in TYPE_LABELS ||
-                  !deployment.repositoryOwner ? (
-                    TYPE_LABELS[deployment.type] ?? deployment.type
+                  {deployment.type in TYPE_LABELS || !deployment.repositoryOwner ? (
+                    deployment.provider === "BYOK_SERVER"
+                      ? deployment.type === "N8N"
+                        ? "n8n · connected server"
+                        : "PostgreSQL · connected server"
+                      : TYPE_LABELS[deployment.type] ?? deployment.type
                   ) : (
                     <>
                       {deployment.repositoryOwner}/{deployment.repositoryName}

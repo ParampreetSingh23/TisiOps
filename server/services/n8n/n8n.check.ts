@@ -36,6 +36,7 @@ const ok = validateN8nConfig(base)
 assert.equal(ok.ok, true)
 assert.equal(ok.ok && ok.config.instanceType, "t3.micro")
 
+
 // A region outside the allowlist is refused, not quietly replaced with the
 // default — an approved plan must match what actually runs.
 assert.equal(validateN8nConfig({ ...base, region: "us-west-2" }).ok, false)

@@ -56,6 +56,8 @@ enum DeploymentProvider {
   TISIOPS_MANAGED_AWS
   /// EC2 in the user's own AWS account, using the AWS connection they saved.
   USER_AWS_ACCOUNT
+  /// An existing server connected with the user's SSH credential.
+  BYOK_SERVER
 }
 
 enum DeploymentStatus {
@@ -909,6 +911,7 @@ model AiChatSession {
   userId    String
   user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   title     String
+  selectedModelId String?
   createdAt DateTime        @default(now())
   updatedAt DateTime        @updatedAt
   messages  AiChatMessage[]
@@ -982,6 +985,8 @@ model AiChatMessage {
   session   AiChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   role      ChatRole
   content   String
+  provider  String?
+  modelId   String?
   createdAt DateTime      @default(now())
 
   @@index([sessionId, createdAt])

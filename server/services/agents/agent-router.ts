@@ -3,6 +3,7 @@ export {
   agentNameForIntent,
   classifyIntent,
   diagnoseRepair,
+  greetingReply,
   isAccountMemoryQuestion,
   isRepairApprovalText,
   isServerMonitoringIntent,

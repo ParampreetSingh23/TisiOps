@@ -1,4 +1,4 @@
-import { askMistral, type ModelCaller } from "../chat-service"
+import { askTisiOps, type ModelCaller } from "../chat-service"
 import {
   findPlan,
   subdomainAutomationEnabled,
@@ -30,7 +30,15 @@ export type DeploymentPlan = {
   aiGenerated: boolean
 }
 
-function sections(config: N8nConfig): PlanSection[] {
+export type ByokTarget = { name: string; address: string }
+
+function sections(config: N8nConfig, target?: ByokTarget): PlanSection[] {
+  if (target) return [
+    { title: "Selected connected server", items: [`${target.name} (${target.address})`, "SSH credentials are stored for this server"] },
+    { title: "Checks before changes", items: ["Verify SSH and passwordless sudo", "Check that ports 80 and 443 are free", "Check Docker can be installed and used"] },
+    { title: "Changes after approval", items: ["Install Docker Engine and Compose if needed", "Install n8n, PostgreSQL 16, and Caddy with persistent volumes", "Run n8n health check before marking deployment live"] },
+    { title: "Network and domain", items: ["No EC2 instance, Elastic IP, or AWS security group will be created", ...(config.domain ? [`Point ${config.domain} at the selected server`, "Caddy requests HTTPS after DNS resolves"] : ["n8n uses the selected server over plain HTTP until a domain is configured", "Webhooks need an HTTPS domain to be reliable"])] },
+  ]
   const plan = findPlan(config.plan)
 
   return [
@@ -122,7 +130,8 @@ function domainItems(config: N8nConfig): string[] {
   ]
 }
 
-function warnings(config: N8nConfig): string[] {
+function warnings(config: N8nConfig, target?: ByokTarget): string[] {
+  if (target) return ["This deployment changes your selected server. No TisiOps AWS resources will be created."]
   const list = [
     "This will create paid AWS resources in the TisiOps AWS account.",
   ]
@@ -154,19 +163,17 @@ const FALLBACK =
  */
 async function summarize(
   config: N8nConfig,
-  caller: ModelCaller
+  caller: ModelCaller,
+  target?: ByokTarget
 ): Promise<{
   summary: string
   aiGenerated: boolean
 }> {
-  if (!process.env.MISTRAL_API_KEY) {
-    return { summary: FALLBACK, aiGenerated: false }
-  }
-
+  if (target) return { summary: `TisiOps will configure n8n on ${target.name} (${target.address}) after SSH and port checks pass. No AWS infrastructure will be created. Nothing changes until you approve this plan.`, aiGenerated: false }
   const plan = findPlan(config.plan)
 
   try {
-    const answer = await askMistral(
+    const answer = await askTisiOps(
       [
         {
           role: "user",
@@ -183,10 +190,12 @@ async function summarize(
           ].join("\n"),
         },
       ],
-      caller
+      caller,
+      undefined,
+      "AGENT"
     )
 
-    const summary = answer.trim()
+    const summary = answer.content.trim()
     return summary
       ? { summary, aiGenerated: true }
       : { summary: FALLBACK, aiGenerated: false }
@@ -200,15 +209,16 @@ async function summarize(
 
 export async function buildDeploymentPlan(
   config: N8nConfig,
-  caller: ModelCaller
+  caller: ModelCaller,
+  target?: ByokTarget
 ): Promise<DeploymentPlan> {
-  const { summary, aiGenerated } = await summarize(config, caller)
+  const { summary, aiGenerated } = await summarize(config, caller, target)
 
   return {
     summary,
-    sections: sections(config),
-    warnings: warnings(config),
-    estimatedMinutes: 6,
+    sections: sections(config, target),
+    warnings: warnings(config, target),
+    estimatedMinutes: target ? 3 : 6,
     aiGenerated,
   }
 }

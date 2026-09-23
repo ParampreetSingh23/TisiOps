@@ -1,16 +1,6 @@
 import type { ChatMessage } from "../validations/chat"
 import { sanitizeReply } from "./ai/reply"
-import {
-  decide,
-  estimateTokens,
-  limitsFor,
-  type LimitReason,
-} from "./ai/limits"
-import { currentMinuteCount, recordMinuteHit } from "./ai/rateLimit"
-import { recordFailure, recordUsage, todaysUsage } from "./ai/usage.service"
-import { aiGatewayChat } from "./ai-gateway/ai-gateway.service"
-
-const MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
+import { aiGatewayChat, DEFAULT_CONSOLE_MODEL } from "./ai-gateway/ai-gateway.service"
 
 const SYSTEM_PROMPT = `You are TisiOps AI Console, an AI DevOps assistant inside the TisiOps platform.
 
@@ -160,131 +150,22 @@ export type ModelCaller = {
   isAdmin: boolean
 }
 
-/** Thrown when a limit stops the call. The message is written for the user. */
-export class AiLimitError extends Error {
-  constructor(
-    message: string,
-    readonly reason: LimitReason
-  ) {
-    super(message)
-    this.name = "AiLimitError"
-  }
-}
-
-function modelName(): string {
-  return process.env.MISTRAL_MODEL ?? "mistral-medium-latest"
-}
-
-/**
- * Sends the conversation to Mistral and returns the assistant's reply.
- *
- * Enforces the caller's limits before the provider is touched and records what
- * the call cost afterwards. A refusal throws AiLimitError and never reaches
- * Mistral, so a user over their limit costs nothing.
- */
-export async function askMistral(
+/** The console prompt and limits are provider-independent. */
+export async function askTisiOps(
   messages: ChatMessage[],
-  caller: ModelCaller
-): Promise<string> {
-  if (process.env.AI_GATEWAY_ENABLED === "true") {
-    const response = await aiGatewayChat({
-      userId: caller.userId,
-      isAdmin: caller.isAdmin,
-      source: "AI_CONSOLE",
-      modelCode: process.env.AI_GATEWAY_DEFAULT_MODEL ?? "gemini-flash",
-      messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
-      temperature: 0.3,
-      maxTokens: 1200,
-    })
-
-    return sanitizeReply(response.content)
-  }
-
-  const apiKey = process.env.MISTRAL_API_KEY
-
-  if (!apiKey) {
-    throw new Error("MISTRAL_API_KEY is not set")
-  }
-
-  const latest = messages.at(-1)?.content ?? ""
-
-  // Checked before the request is built, so a refusal costs nothing.
-  const decision = decide({
-    isAdmin: caller.isAdmin,
-    message: latest,
-    usage: await todaysUsage(caller.userId),
-    minuteCount: await currentMinuteCount(caller.userId),
-  })
-
-  if (!decision.allowed) {
-    throw new AiLimitError(decision.message, decision.reason)
-  }
-
-  // Counted at the attempt, not at success: retrying a failing call is still
-  // traffic, and burst control has to see it.
-  await recordMinuteHit(caller.userId)
-
-  // Only the most recent turns go to the model. Older ones cost tokens on
-  // every message and add little, and an unbounded history is how one long
-  // conversation spends a whole day's budget.
-  const limits = limitsFor(caller.isAdmin)
-  const trimmed = messages.slice(-limits.maxHistory)
-
-  const response = await fetch(MISTRAL_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: process.env.MISTRAL_MODEL ?? "mistral-medium-latest",
-      messages: [{ role: "system", content: SYSTEM_PROMPT }, ...trimmed],
-      temperature: 0.3,
-      max_tokens: 1200,
-    }),
-  })
-
-  if (!response.ok) {
-    // Reached the provider and failed: recorded as a failure, with no output
-    // tokens, because the user was never served a reply.
-    await recordFailure({ userId: caller.userId, model: modelName() })
-
-    // Upstream body can echo request details, so only the status is surfaced.
-    throw new Error(`Mistral request failed with status ${response.status}`)
-  }
-
-  const body = (await response.json()) as {
-    choices?: { message?: { content?: string } }[]
-    usage?: {
-      prompt_tokens?: number
-      completion_tokens?: number
-      total_tokens?: number
-    }
-  }
-  const reply = body.choices?.[0]?.message?.content
-
-  if (typeof reply !== "string" || reply.trim().length === 0) {
-    await recordFailure({ userId: caller.userId, model: modelName() })
-    throw new Error("Mistral returned an empty response")
-  }
-
-  // The provider's own count when it gives one; a character estimate only as a
-  // fallback, because guessing low means spending real money unnoticed.
-  const inputTokens =
-    body.usage?.prompt_tokens ??
-    estimateTokens(trimmed.map((message) => message.content).join(" "))
-  const outputTokens = body.usage?.completion_tokens ?? estimateTokens(reply)
-
-  await recordUsage({
+  caller: ModelCaller,
+  modelCode = DEFAULT_CONSOLE_MODEL,
+  source: "AI_CONSOLE" | "AGENT" = "AI_CONSOLE"
+): Promise<{ content: string; provider: string; modelId: string }> {
+  const response = await aiGatewayChat({
     userId: caller.userId,
-    model: modelName(),
-    usage: {
-      inputTokens,
-      outputTokens,
-      totalTokens: body.usage?.total_tokens ?? inputTokens + outputTokens,
-    },
+    isAdmin: caller.isAdmin,
+    source,
+    modelCode,
+    messages: [{ role: "system", content: SYSTEM_PROMPT }, ...messages],
+    temperature: 0.3,
+    maxTokens: 1200,
   })
 
-  return sanitizeReply(reply)
+  return { content: sanitizeReply(response.content), provider: response.provider, modelId: response.model }
 }

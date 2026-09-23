@@ -73,7 +73,8 @@ export async function pendingServerRepairForSession(
 
 export async function approveServerRepair(
   userId: string,
-  repairPlanId: string
+  repairPlanId: string,
+  expectedServerId?: string
 ): Promise<
   | { ok: true; repairPlanId: string; repairActionId: string }
   | { ok: false; status: number; error: string }
@@ -81,7 +82,9 @@ export async function approveServerRepair(
   const plan = await prisma.serverRepairPlan.findFirst({
     where: { id: repairPlanId, userId },
   })
-  if (!plan) return { ok: false, status: 404, error: "Repair plan not found" }
+  if (!plan || (expectedServerId && plan.serverId !== expectedServerId)) {
+    return { ok: false, status: 404, error: "Repair plan not found" }
+  }
 
   if (plan.status === "APPROVED" || plan.status === "QUEUED" || plan.status === "RUNNING") {
     return { ok: false, status: 409, error: "This repair plan is already approved or running." }

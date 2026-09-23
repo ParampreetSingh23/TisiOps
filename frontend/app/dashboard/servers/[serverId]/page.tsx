@@ -29,6 +29,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { ConfirmModal } from "@/components/dashboard/confirm-modal"
 import { MonitoringStatusCard } from "@/components/dashboard/monitoring-status-card"
 import { SshCredentialsModal } from "@/components/dashboard/ssh-credentials-modal"
+import { ServerCopilot } from "@/components/dashboard/server-copilot"
 import { apiFetch } from "@/lib/api"
 import { primaryButton, secondaryButton } from "@/lib/ui"
 import {
@@ -593,6 +594,7 @@ export default function ServerDetailPage() {
           onSaved={handleCredentialsSaved}
         />
       )}
+      <ServerCopilot serverId={server.id} dockerInstalled={server.dockerStatus === "INSTALLED"} />
     </div>
   )
 }

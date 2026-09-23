@@ -69,7 +69,8 @@ type Message = {
   question?: string
 }
 
-type SessionSummary = { id: string; title: string; updatedAt: string }
+type ModelId = "mistral-default" | "gemini-3.8-flash"
+type SessionSummary = { id: string; title: string; updatedAt: string; selectedModelId: ModelId | null }
 type SessionDetail = SessionSummary & { messages: Message[] }
 
 /**
@@ -96,6 +97,18 @@ function titleFrom(text: string) {
   return clean.length > 38 ? `${clean.slice(0, 38)}…` : clean
 }
 
+function errorText(message: string) {
+  const messages: Record<string, string> = {
+    MISTRAL_NOT_CONFIGURED: "Mistral is not configured on this TisiOps instance.",
+    GEMINI_NOT_CONFIGURED: "Gemini is not configured on this TisiOps instance.",
+    PROVIDER_RATE_LIMITED: "This model is busy right now. Retry shortly or switch models.",
+    PROVIDER_UNAVAILABLE: "This model is unavailable right now. Retry or switch models.",
+    MODEL_ERROR: "This model could not complete the request. Retry or switch models.",
+    INVALID_MODEL: "Choose one of the available models.",
+  }
+  return messages[message] ?? message
+}
+
 export function AiConsole({ firstName }: { firstName: string | null }) {
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -105,6 +118,9 @@ export function AiConsole({ firstName }: { firstName: string | null }) {
   const [usage, setUsage] = useState<UsageSummary | null>(null)
   const [isLoadingChat, setIsLoadingChat] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [failedContent, setFailedContent] = useState<string | null>(null)
+  const [selectedModelId, setSelectedModelId] = useState<ModelId>("mistral-default")
+  const [isChangingModel, setIsChangingModel] = useState(false)
   const endRef = useRef<HTMLDivElement>(null)
 
   // Load this user's sessions, and clear anything the old browser-storage
@@ -147,6 +163,7 @@ export function AiConsole({ firstName }: { firstName: string | null }) {
       // pasted id from another account is indistinguishable from a dead one.
       const session = await apiFetch<SessionDetail>(`/api/chat/sessions/${id}`)
       setMessages(session.messages)
+      setSelectedModelId(session.selectedModelId ?? "mistral-default")
     } catch (caught) {
       setMessages([])
       setError(caught instanceof Error ? caught.message : "Chat not found")
@@ -160,6 +177,28 @@ export function AiConsole({ firstName }: { firstName: string | null }) {
     setMessages([])
     setPrompt("")
     setError(null)
+    setSelectedModelId("mistral-default")
+  }
+
+  async function changeModel(next: ModelId) {
+    const previous = selectedModelId
+    setSelectedModelId(next)
+    setError(null)
+    if (!activeId) return
+    setIsChangingModel(true)
+
+    try {
+      await apiFetch(`/api/chat/sessions/${activeId}/model`, {
+        method: "PATCH",
+        body: JSON.stringify({ selectedModelId: next }),
+      })
+      setSessions((items) => items.map((item) => item.id === activeId ? { ...item, selectedModelId: next } : item))
+    } catch (caught) {
+      setSelectedModelId(previous)
+      setError(caught instanceof Error ? caught.message : "Could not change model")
+    } finally {
+      setIsChangingModel(false)
+    }
   }
 
   async function remove(id: string) {
@@ -186,13 +225,14 @@ export function AiConsole({ firstName }: { firstName: string | null }) {
     void refreshUsage()
   }, [])
 
-  async function send(text: string) {
+  async function send(text: string, retry = false) {
     const content = text.trim()
-    if (!content || isSending) return
+    if (!content || isSending || isChangingModel) return
 
-    setMessages((current) => [...current, { role: "user", content }])
+    if (!retry) setMessages((current) => [...current, { role: "user", content }])
     setPrompt("")
     setError(null)
+    setFailedContent(null)
     setIsSending(true)
 
     try {
@@ -202,7 +242,7 @@ export function AiConsole({ firstName }: { firstName: string | null }) {
       if (!sessionId) {
         const created = await apiFetch<SessionSummary>("/api/chat/sessions", {
           method: "POST",
-          body: JSON.stringify({ title: titleFrom(content) }),
+          body: JSON.stringify({ title: titleFrom(content), selectedModelId }),
         })
         sessionId = created.id
         setActiveId(created.id)
@@ -238,7 +278,8 @@ export function AiConsole({ firstName }: { firstName: string | null }) {
         },
       ])
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Request failed")
+      setError(errorText(caught instanceof Error ? caught.message : "Request failed"))
+      setFailedContent(content)
     } finally {
       setIsSending(false)
       void refreshUsage()
@@ -306,6 +347,20 @@ export function AiConsole({ firstName }: { firstName: string | null }) {
       {/* Thread + composer: thread takes the free height, composer sits at the bottom */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="mx-auto flex min-h-0 w-full max-w-2xl flex-1 flex-col">
+          <div className="flex shrink-0 items-center justify-between border-b border-line pb-3">
+            <p className="text-xs font-medium tracking-[0.08em] text-ink-muted uppercase">Reasoning model</p>
+            <label className="sr-only" htmlFor="tisiops-model">Reasoning model</label>
+            <select
+              id="tisiops-model"
+              value={selectedModelId}
+              onChange={(event) => void changeModel(event.target.value as ModelId)}
+              disabled={isSending || isChangingModel}
+              className="h-8 rounded-[6px] border border-line-warm bg-surface px-2 text-xs font-medium text-ink-default outline-none transition-colors focus:border-brand disabled:opacity-50"
+            >
+              <option value="mistral-default">Mistral — Existing / Free</option>
+              <option value="gemini-3.8-flash">Gemini 3.8 Flash — Google · Recommended</option>
+            </select>
+          </div>
           <div className="scrollbar-subtle min-h-0 flex-1 overflow-y-auto pr-1">
             {isLoadingChat ? (
               <p className="py-8 text-sm text-ink-muted">Loading chat…</p>
@@ -384,12 +439,18 @@ export function AiConsole({ firstName }: { firstName: string | null }) {
           </div>
 
           {error ? (
-            <p
-              role="alert"
-              className="mb-3 rounded-[6px] border border-line bg-surface px-4 py-3 text-sm text-ink-default"
-            >
-              {error}
-            </p>
+            <div role="alert" className="mb-3 flex items-center justify-between gap-3 rounded-[6px] border border-line bg-surface px-4 py-3 text-sm text-ink-default">
+              <p>{error}</p>
+              {failedContent ? (
+                <button
+                  type="button"
+                  onClick={() => void send(failedContent, true)}
+                  className="shrink-0 font-medium text-brand hover:text-brand-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+                >
+                  Retry
+                </button>
+              ) : null}
+            </div>
           ) : null}
 
           <form
@@ -424,6 +485,7 @@ export function AiConsole({ firstName }: { firstName: string | null }) {
                 type="submit"
                 disabled={
                   isSending ||
+                  isChangingModel ||
                   prompt.trim().length === 0 ||
                   usage?.canSend === false ||
                   (usage ? prompt.trim().length > usage.maxInputChars : false)

@@ -68,6 +68,7 @@ export const n8nDeploymentSchema = z.object({
   plan: z.enum(["STARTER", "GROWTH", "PRO"]).default("STARTER"),
   domainMode: z.enum(["TISIOPS_SUBDOMAIN", "CUSTOM", "NONE"]).default("NONE"),
   domain: z.string().trim().max(253).nullable().default(null),
+  targetServerId: z.string().trim().min(1).nullable().optional(),
 })
 
 export const postgresDeploymentSchema = z.object({
@@ -75,6 +76,7 @@ export const postgresDeploymentSchema = z.object({
   databaseName: z.string().trim().min(1).max(63).nullable().optional(),
   databaseUser: z.string().trim().min(1).max(63).nullable().optional(),
   postgresVersion: z.string().trim().min(1).max(31).nullable().optional(),
+  targetServerId: z.string().trim().min(1).nullable().optional(),
 })
 
 /**

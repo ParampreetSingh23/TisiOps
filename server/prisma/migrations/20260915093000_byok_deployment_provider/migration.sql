@@ -1,0 +1,1 @@
+ALTER TYPE "DeploymentProvider" ADD VALUE IF NOT EXISTS 'BYOK_SERVER';

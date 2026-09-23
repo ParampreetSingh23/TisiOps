@@ -359,7 +359,7 @@ export default async function NewDeploymentPage() {
                 </p>
                 <div className="mt-auto w-full pt-5">
                   <Link
-                    href={template.href ?? "/dashboard/new-deployment/create"}
+                    href={template.id ? `/dashboard/new-deployment/target?template=${template.id}` : template.href ?? "/dashboard/new-deployment/create"}
                     className="inline-flex h-9 w-full items-center justify-center rounded-[6px] border border-line-warm bg-surface px-4 text-sm font-medium text-ink-default transition-colors duration-150 ease-out hover:bg-canvas focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ink-muted"
                   >
                     Use Template

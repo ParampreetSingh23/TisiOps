@@ -64,6 +64,8 @@
     "check:agent": "tsx services/terraform/agent.check.ts",
     "check:agent-routing": "tsx --env-file=.env services/agents/routing.check.ts",
     "check:limits": "tsx services/ai/limits.check.ts",
+    "check:ai-provider-contract": "tsx services/ai-gateway/providers/providers.check.ts",
+    "check:ai-providers": "tsx --env-file-if-exists=.env services/ai-gateway/providers/providers.live.check.ts",
     "check:lifecycle": "tsx services/deployments/lifecycle.check.ts",
     "check:intent": "tsx services/github/intent.check.ts",
     "check:code-profile": "tsx services/github/code-profile.check.ts",
@@ -78,7 +80,8 @@
     "check:monitoring": "tsx services/servers/monitoring-installer.check.ts",
     "check:metrics": "tsx services/servers/metrics-collector.check.ts",
     "check:monitoring-agent": "tsx services/agents/monitoring-health.check.ts",
-    "check:staging": "tsx --env-file=.env services/agents/staging.check.ts"
+    "check:staging": "tsx --env-file=.env services/agents/staging.check.ts",
+    "check:server-copilot": "tsx services/servers/copilot-capabilities.check.ts"
   },
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.1106.0",

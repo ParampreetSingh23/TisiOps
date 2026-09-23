@@ -1,6 +1,7 @@
 import { connectedRedis, isRedisConfigured } from "../../queues/redis"
 import { estimateTokens, minuteBucket, usageDate } from "./limits"
 import { sanitizeReply } from "./reply"
+import { aiGatewayChat } from "../ai-gateway/ai-gateway.service"
 
 /**
  * The one free prompt on the landing page.
@@ -10,12 +11,9 @@ import { sanitizeReply } from "./reply"
  * Everything here exists to bound that: a short input, a short answer, a
  * per-address allowance, and a hard global ceiling for the day.
  *
- * Deliberately separate from askMistral rather than a flag on it — the
- * per-user accounting in chat-service must stay impossible to bypass, and a
- * shared function with an "anonymous" mode is exactly how that gets bypassed.
+ * Deliberately separate from the console's accounting: the demo has stricter
+ * public limits, then uses the shared provider-neutral gateway.
  */
-
-const MISTRAL_URL = "https://api.mistral.ai/v1/chat/completions"
 
 /** Small enough to answer a question, too small to be useful as free ChatGPT. */
 export const DEMO_LIMITS = {
@@ -116,14 +114,6 @@ export async function runDemoPrompt(input: {
     }
   }
 
-  if (!process.env.MISTRAL_API_KEY) {
-    return {
-      ok: false,
-      error: "The demo is not available right now.",
-      status: 503,
-    }
-  }
-
   // No counter, no call. Failing open here would leave the endpoint unlimited
   // exactly when the limiter is broken.
   if (!isRedisConfigured()) {
@@ -171,48 +161,19 @@ export async function runDemoPrompt(input: {
   await bump(globalKey, 86_400)
 
   try {
-    const response = await fetch(MISTRAL_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        Authorization: `Bearer ${process.env.MISTRAL_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: process.env.MISTRAL_MODEL ?? "mistral-medium-latest",
-        messages: [
-          { role: "system", content: DEMO_PROMPT },
-          { role: "user", content: message },
-        ],
-        temperature: 0.3,
-        // The hard cost ceiling for a single call.
-        max_tokens: DEMO_LIMITS.maxOutputTokens,
-      }),
-      signal: AbortSignal.timeout(20_000),
+    const response = await aiGatewayChat({
+      isAdmin: false,
+      source: "DEMO",
+      modelCode: "mistral-default",
+      messages: [
+        { role: "system", content: DEMO_PROMPT },
+        { role: "user", content: message },
+      ],
+      temperature: 0.3,
+      maxTokens: DEMO_LIMITS.maxOutputTokens,
     })
 
-    if (!response.ok) {
-      return {
-        ok: false,
-        error: "The demo could not answer just now. Try again shortly.",
-        status: 502,
-      }
-    }
-
-    const body = (await response.json()) as {
-      choices?: { message?: { content?: string } }[]
-    }
-    const answer = body.choices?.[0]?.message?.content?.trim()
-
-    if (!answer) {
-      return {
-        ok: false,
-        error: "The demo could not answer just now. Try again shortly.",
-        status: 502,
-      }
-    }
-
-    return { ok: true, answer: sanitizeReply(answer) }
+    return { ok: true, answer: sanitizeReply(response.content) }
   } catch {
     // Upstream text can echo the request, so only a written message is used.
     return {

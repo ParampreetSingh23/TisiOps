@@ -17,25 +17,23 @@ import {
 import { useState } from "react"
 
 import { apiFetch } from "@/lib/api"
+import { ProviderIcon } from "@/components/deployment/provider-icon"
 import { card, inputClass, labelClass, primaryButton, secondaryButton } from "@/lib/ui"
 
 export type ProviderOption = {
   id: string
   name: string
-  icon?: string
+  icon: string
+  hostPlaceholder: string
+  usernameHint: string
+  networkHint: string
 }
 
 const PROVIDERS: ProviderOption[] = [
-  { id: "AWS", name: "AWS EC2" },
-  { id: "GCP", name: "Google Cloud VM" },
-  { id: "AZURE", name: "Azure VM" },
-  { id: "DIGITALOCEAN", name: "DigitalOcean" },
-  { id: "HETZNER", name: "Hetzner" },
-  { id: "VULTR", name: "Vultr" },
-  { id: "LINODE", name: "Linode / Akamai" },
-  { id: "EXCLOUD", name: "Excloud" },
-  { id: "CONTABO", name: "Contabo" },
-  { id: "OTHER_VPS", name: "Other VPS" },
+  { id: "EXCLOUD", name: "Excloud", icon: "excloud", hostPlaceholder: "Public IP from your Excloud VM", usernameHint: "Username configured for this VM", networkHint: "Use VM public IP and allow inbound SSH on port 22." },
+  { id: "AWS", name: "AWS EC2", icon: "aws", hostPlaceholder: "EC2 public IPv4 or public DNS", usernameHint: "ubuntu or ec2-user, based on AMI", networkHint: "Allow inbound SSH in EC2 security group." },
+  { id: "AZURE", name: "Azure VM", icon: "azure", hostPlaceholder: "Azure VM public IP or DNS name", usernameHint: "User created with Azure VM", networkHint: "Allow inbound SSH in network security group." },
+  { id: "GCP", name: "Google Cloud VM", icon: "gcp", hostPlaceholder: "Compute Engine external IP or DNS name", usernameHint: "Username configured for this VM", networkHint: "Allow inbound SSH in VPC firewall rules." },
 ]
 
 export function ConnectServerModal({
@@ -57,7 +55,7 @@ export function ConnectServerModal({
   const [host, setHost] = useState<string>("")
   const [sshPort, setSshPort] = useState<number>(22)
   const [osType, setOsType] = useState<string>("Ubuntu")
-  const [sshUsername, setSshUsername] = useState<string>("ubuntu")
+  const [sshUsername, setSshUsername] = useState<string>("")
   const [authType, setAuthType] = useState<"key" | "password">("key")
   const [privateKey, setPrivateKey] = useState<string>("")
   const [passphrase, setPassphrase] = useState<string>("")
@@ -80,6 +78,7 @@ export function ConnectServerModal({
 
   // Final submit state
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const selectedProvider = PROVIDERS.find((item) => item.id === provider) ?? PROVIDERS[0]
 
   if (!isOpen) return null
 
@@ -136,7 +135,7 @@ export function ConnectServerModal({
     setIsSubmitting(true)
     try {
       const generatedName =
-        serverName.trim() || `ubuntu-server-${Math.random().toString(36).substring(2, 7)}`
+        serverName.trim() || `server-${Math.random().toString(36).substring(2, 7)}`
 
       await apiFetch("/api/servers", {
         method: "POST",
@@ -211,7 +210,7 @@ export function ConnectServerModal({
                     Connect Your Own Server
                   </h3>
                   <p className="mt-2 text-xs leading-relaxed text-ink-muted">
-                    Use an existing Ubuntu/VPS/cloud server from AWS, Hetzner, DigitalOcean, Vultr, Linode, Excloud, or any provider.
+                    Connect an existing server from Excloud, AWS, Azure, or Google Cloud over SSH.
                   </p>
                 </div>
 
@@ -270,13 +269,12 @@ export function ConnectServerModal({
                 {[1, 2, 3, 4, 5].map((s) => (
                   <div
                     key={s}
-                    className={`h-1.5 w-6 rounded-full transition-all ${
-                      s === step
+                    className={`h-1.5 w-6 rounded-full transition-all ${s === step
                         ? "bg-brand"
                         : s < step
-                        ? "bg-brand/40"
-                        : "bg-line-warm"
-                    }`}
+                          ? "bg-brand/40"
+                          : "bg-line-warm"
+                      }`}
                   />
                 ))}
               </div>
@@ -289,7 +287,7 @@ export function ConnectServerModal({
                   Where is this server hosted?
                 </label>
                 <p className="mt-1 text-xs text-ink-muted">
-                  Select your provider for metadata labeling. No provider API credentials required.
+                  Choose provider. TisiOps connects only over SSH; no cloud account or API credentials needed.
                 </p>
 
                 <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
@@ -300,13 +298,12 @@ export function ConnectServerModal({
                         key={p.id}
                         type="button"
                         onClick={() => setProvider(p.id)}
-                        className={`flex items-center gap-2 rounded-[6px] border p-3 text-left text-xs font-medium transition-all ${
-                          isSelected
+                        className={`flex items-center gap-2.5 rounded-[6px] border p-3 text-left text-xs font-medium transition-all ${isSelected
                             ? "border-brand bg-brand-soft text-brand font-semibold"
                             : "border-line-warm bg-surface text-ink-default hover:bg-canvas"
-                        }`}
+                          }`}
                       >
-                        <ServerIcon className="size-4 shrink-0" />
+                        <ProviderIcon id={p.icon} />
                         <span>{p.name}</span>
                       </button>
                     )
@@ -344,7 +341,7 @@ export function ConnectServerModal({
                     type="text"
                     value={host}
                     onChange={(e) => setHost(e.target.value)}
-                    placeholder="e.g. 13.234.12.56 or server.example.com"
+                    placeholder={selectedProvider.hostPlaceholder}
                     className={inputClass}
                     required
                   />
@@ -372,7 +369,7 @@ export function ConnectServerModal({
                 </div>
 
                 <div className="rounded-[6px] border border-line-warm bg-canvas p-3 text-xs text-ink-muted">
-                  For now, TisiOps supports Ubuntu servers best. Other Linux servers may work later.
+                  {selectedProvider.networkHint} TisiOps supports Ubuntu servers best.
                 </div>
 
                 <div className="mt-6 flex items-center justify-between">
@@ -397,12 +394,12 @@ export function ConnectServerModal({
             {step === 3 && (
               <div className="mt-5 space-y-4">
                 <div>
-                  <label className={labelClass}>SSH username</label>
+                  <label className={labelClass}>SSH username *</label>
                   <input
                     type="text"
                     value={sshUsername}
                     onChange={(e) => setSshUsername(e.target.value)}
-                    placeholder="ubuntu"
+                    placeholder={selectedProvider.usernameHint}
                     className={inputClass}
                   />
                 </div>
@@ -413,11 +410,10 @@ export function ConnectServerModal({
                     <button
                       type="button"
                       onClick={() => setAuthType("key")}
-                      className={`flex flex-1 items-center justify-center gap-2 rounded-[6px] border p-2.5 text-xs font-medium ${
-                        authType === "key"
+                      className={`flex flex-1 items-center justify-center gap-2 rounded-[6px] border p-2.5 text-xs font-medium ${authType === "key"
                           ? "border-brand bg-brand-soft text-brand font-semibold"
                           : "border-line-warm bg-surface text-ink-default hover:bg-canvas"
-                      }`}
+                        }`}
                     >
                       <Key className="size-4" />
                       SSH Private Key
@@ -425,11 +421,10 @@ export function ConnectServerModal({
                     <button
                       type="button"
                       onClick={() => setAuthType("password")}
-                      className={`flex flex-1 items-center justify-center gap-2 rounded-[6px] border p-2.5 text-xs font-medium ${
-                        authType === "password"
+                      className={`flex flex-1 items-center justify-center gap-2 rounded-[6px] border p-2.5 text-xs font-medium ${authType === "password"
                           ? "border-brand bg-brand-soft text-brand font-semibold"
                           : "border-line-warm bg-surface text-ink-default hover:bg-canvas"
-                      }`}
+                        }`}
                     >
                       <Lock className="size-4" />
                       Password
@@ -494,7 +489,7 @@ export function ConnectServerModal({
                   </button>
                   <button
                     disabled={
-                      authType === "key" ? !privateKey.trim() : !password.trim()
+                      !sshUsername.trim() || (authType === "key" ? !privateKey.trim() : !password.trim())
                     }
                     onClick={() => {
                       setStep(4)
@@ -573,7 +568,7 @@ export function ConnectServerModal({
                         </div>
                         <p className="mt-2 font-medium">{testResult.error}</p>
                         <p className="mt-2 text-ink-muted">
-                          Make sure the SSH port ({sshPort}) is open in your cloud provider security groups/firewall.
+                          {selectedProvider.networkHint} SSH port is {sshPort}.
                         </p>
                       </div>
                     )}
@@ -614,13 +609,14 @@ export function ConnectServerModal({
                   <h3 className="font-semibold text-sm text-ink-strong">Server Summary</h3>
 
                   <div className="grid grid-cols-2 gap-y-2 text-xs">
-                    <div>
+                    <div className="flex items-center gap-1.5">
                       <span className="text-ink-muted">Provider:</span>{" "}
-                      <span className="font-medium text-ink-strong">{provider}</span>
+                      <ProviderIcon id={selectedProvider.id} className="size-3.5 shrink-0" />
+                      <span className="font-medium text-ink-strong">{selectedProvider.name}</span>
                     </div>
                     <div>
                       <span className="text-ink-muted">Server Name:</span>{" "}
-                      <span className="font-medium text-ink-strong">{serverName || `ubuntu-server-${host}`}</span>
+                      <span className="font-medium text-ink-strong">{serverName || `server-${host}`}</span>
                     </div>
                     <div>
                       <span className="text-ink-muted">Host IP:</span>{" "}

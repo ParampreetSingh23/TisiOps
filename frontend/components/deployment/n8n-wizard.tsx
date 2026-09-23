@@ -2,7 +2,7 @@
 
 import { SiN8n, SiN8nHex } from "@icons-pack/react-simple-icons"
 import { AlertTriangle, ArrowLeft, Check, Loader2, Server } from "lucide-react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { useEffect, useState } from "react"
 
 import { ProviderIcon } from "@/components/deployment/provider-icon"
@@ -76,6 +76,8 @@ const TIMEZONES = [
 
 export function N8nWizard() {
   const router = useRouter()
+  const targetServerId = useSearchParams().get("targetServerId")
+  const byok = Boolean(targetServerId)
   const [options, setOptions] = useState<Options | null>(null)
   const [blocked, setBlocked] = useState<string | null>(null)
   const [form, setForm] = useState<Form>({
@@ -123,7 +125,7 @@ export function N8nWizard() {
     try {
       const result = await apiFetch<{ plan: DeploymentPlan }>(
         "/api/deployments/n8n/plan",
-        { method: "POST", body: JSON.stringify(payload(form)) }
+        { method: "POST", body: JSON.stringify(payload(form, targetServerId)) }
       )
       setPlan(result.plan)
     } catch (cause) {
@@ -140,7 +142,7 @@ export function N8nWizard() {
     try {
       const result = await apiFetch<{ id: string }>(
         "/api/deployments/n8n/deploy",
-        { method: "POST", body: JSON.stringify(payload(form)) }
+        { method: "POST", body: JSON.stringify(payload(form, targetServerId)) }
       )
       router.push(`/dashboard/deployments/${result.id}/progress`)
     } catch (cause) {
@@ -192,17 +194,16 @@ export function N8nWizard() {
           <SiN8n className="mt-0.5 size-6 shrink-0" color={SiN8nHex} />
           <div>
             <h2 className={sectionTitle}>
-              Deploy n8n on TisiOps Managed Server
+              Deploy n8n on {byok ? "your connected server" : "TisiOps Managed Server"}
             </h2>
             <p className="mt-1.5 text-sm text-ink-muted">
-              TisiOps will create and configure a managed server for n8n using
-              TisiOps infrastructure. No AWS account is required from the user.
+              {byok ? "TisiOps will preflight and configure the server you selected." : "TisiOps will create and configure a managed server for n8n using TisiOps infrastructure. No AWS account is required from the user."}
             </p>
           </div>
         </div>
       </div>
 
-      <fieldset className={card}>
+      {!byok && <fieldset className={card}>
         <legend className={sectionTitle}>Hosting</legend>
 
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -229,7 +230,7 @@ export function N8nWizard() {
             <p className="mt-2 text-sm text-ink-muted">Coming soon</p>
           </div>
         </div>
-      </fieldset>
+      </fieldset>}
 
       <fieldset className={card}>
         <legend className={sectionTitle}>Workspace</legend>
@@ -278,23 +279,25 @@ export function N8nWizard() {
             />
           </div>
 
-          <div>
-            <span className={labelClass}>Region</span>
-            <Select
-              label="Region"
-              value={form.region}
-              onValueChange={(region) => update("region", region)}
-              options={options.regions.map((region) => ({
-                value: region,
-                label: region,
-                hint: REGION_NAMES[region],
-              }))}
-            />
-          </div>
+          {!byok ? (
+            <div>
+              <span className={labelClass}>Region</span>
+              <Select
+                label="Region"
+                value={form.region}
+                onValueChange={(region) => update("region", region)}
+                options={options.regions.map((region) => ({
+                  value: region,
+                  label: region,
+                  hint: REGION_NAMES[region],
+                }))}
+              />
+            </div>
+          ) : null}
         </div>
       </fieldset>
 
-      <fieldset className={card}>
+      {!byok && <fieldset className={card}>
         <legend className={sectionTitle}>Server plan</legend>
 
         <div className="mt-4 grid gap-3 sm:grid-cols-3">
@@ -336,7 +339,7 @@ export function N8nWizard() {
             )
           })}
         </div>
-      </fieldset>
+      </fieldset>}
 
       <fieldset className={card}>
         <legend className={sectionTitle}>Domain</legend>
@@ -346,26 +349,26 @@ export function N8nWizard() {
             checked={form.domainMode === "NONE"}
             onSelect={() => update("domainMode", "NONE")}
             title="No domain yet"
-            detail="n8n answers on the server's Elastic IP over plain HTTP. Webhooks need HTTPS to be reliable."
+            detail={byok ? "n8n answers on your selected server over plain HTTP. Webhooks need HTTPS to be reliable." : "n8n answers on the server's Elastic IP over plain HTTP. Webhooks need HTTPS to be reliable."}
           />
 
-          <DomainChoice
-            checked={form.domainMode === "TISIOPS_SUBDOMAIN"}
-            onSelect={() => update("domainMode", "TISIOPS_SUBDOMAIN")}
-            title="TisiOps subdomain"
-            detail={
-              options.subdomainAutomation
-                ? "workspace-name.tisiops.app, created automatically."
-                : options.subdomainNotice
-            }
-            disabled={!options.subdomainAutomation}
-          />
+          {!byok ? <DomainChoice
+              checked={form.domainMode === "TISIOPS_SUBDOMAIN"}
+              onSelect={() => update("domainMode", "TISIOPS_SUBDOMAIN")}
+              title="TisiOps subdomain"
+              detail={
+                options.subdomainAutomation
+                  ? "workspace-name.tisiops.app, created automatically."
+                  : options.subdomainNotice
+              }
+              disabled={!options.subdomainAutomation}
+            /> : null}
 
           <DomainChoice
             checked={form.domainMode === "CUSTOM"}
             onSelect={() => update("domainMode", "CUSTOM")}
             title="Custom domain"
-            detail="You point an A record at the Elastic IP once the server exists. Caddy then issues the certificate."
+            detail={byok ? "Point an A record at your selected server. Caddy then issues the certificate." : "You point an A record at the Elastic IP once the server exists. Caddy then issues the certificate."}
           />
 
           {form.domainMode === "CUSTOM" ? (
@@ -562,9 +565,10 @@ function PlanReview({
   )
 }
 
-function payload(form: Form) {
+function payload(form: Form, targetServerId: string | null) {
   return {
     ...form,
     domain: form.domainMode === "CUSTOM" ? form.domain : null,
+    targetServerId,
   }
 }

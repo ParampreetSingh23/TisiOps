@@ -42,6 +42,7 @@ type ServerSummary = {
   instanceType: string
   awsInstanceId: string | null
   elasticIp: string | null
+  publicIp: string | null
   status: string
 } | null
 
@@ -278,6 +279,7 @@ export function N8nProgressView({ id }: { id: string }) {
 
   const { phase } = progress
   const copy = COPY[progress.type] ?? COPY.N8N
+  const byok = progress.provider === "BYOK_SERVER"
   // Deploying and restarting look the same on screen — a percentage, a bar, a
   // step list, and the live log — because in both the user is waiting on work
   // that is already under way. Only the steps differ, and the server decides
@@ -407,15 +409,15 @@ export function N8nProgressView({ id }: { id: string }) {
       ) : null}
 
       <dl className={`${card} grid gap-4 sm:grid-cols-4`}>
-        <Detail label="Type" value={copy.kind} />
-        <Detail label="Provider" value="AWS" />
-        <Detail label="Template" value={copy.template} />
-        <Detail label="Access Mode" value={copy.access} />
+        <Detail label="Type" value={byok ? "n8n Connected Server" : copy.kind} />
+        <Detail label="Provider" value={byok ? "Your connected server" : "AWS"} />
+        <Detail label="Template" value={byok ? "n8n Docker Compose" : copy.template} />
+        <Detail label="Access Mode" value={byok ? "SSH + Docker" : copy.access} />
         {/* Read from the Server row, which does not exist until Terraform has
             run — a default here would name a region the server is not in. */}
-        <Detail label="Region" value={progress.server?.region ?? "Pending"} />
-        <Detail label="Size" value={progress.server?.instanceType ?? "Pending"} />
-        <Detail label="Address" value={progress.publicUrl ?? progress.server?.elasticIp ?? "Pending allocation"} />
+        <Detail label={byok ? "Server region" : "Region"} value={progress.server?.region ?? "Pending"} />
+        <Detail label={byok ? "Server size" : "Size"} value={progress.server?.instanceType ?? "Pending"} />
+        <Detail label="Address" value={progress.publicUrl ?? (byok ? progress.server?.publicIp : progress.server?.elasticIp) ?? "Pending allocation"} />
         <Detail label="Status" value={progress.status} />
       </dl>
 
@@ -463,7 +465,7 @@ export function N8nProgressView({ id }: { id: string }) {
         </details>
       )}
 
-      <TerraformPanel id={id} />
+      {!byok ? <TerraformPanel id={id} /> : null}
       <DeploymentActions id={id} />
 
       {jobs.length > 0 ? (

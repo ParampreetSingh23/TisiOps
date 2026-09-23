@@ -53,11 +53,19 @@ export async function createManagedN8nDeployment(input: {
   userId: string
   isAdmin: boolean
   config: N8nConfigInput
+  targetServerId?: string | null
 }): Promise<CreateResult> {
   const validated = validateN8nConfig(input.config)
   if (!validated.ok) return { ok: false, error: validated.error }
 
   const config = validated.config
+
+  const target = input.targetServerId
+    ? await prisma.server.findFirst({ where: { id: input.targetServerId, userId: input.userId }, select: { id: true, status: true, credentialsStored: true } })
+    : null
+  if (input.targetServerId && (!target || target.status !== "CONNECTED" || !target.credentialsStored)) {
+    return { ok: false, error: "Select a connected server with stored SSH credentials." }
+  }
 
   if (!input.isAdmin && (await countActiveN8n(input.userId)) > 0) {
     return { ok: false, error: ACTIVE_LIMIT_MESSAGE }
@@ -67,7 +75,7 @@ export async function createManagedN8nDeployment(input: {
     data: {
       userId: input.userId,
       type: "N8N",
-      provider: "TISIOPS_MANAGED_AWS",
+      provider: target ? "BYOK_SERVER" : "TISIOPS_MANAGED_AWS",
       appName: config.workspaceName,
       template: "aws-n8n-server",
       status: "PENDING",
@@ -91,7 +99,8 @@ export async function createManagedN8nDeployment(input: {
     },
   })
 
-  await appendLog(deployment.id, "n8n deployment approved", "SUCCESS")
+  if (target) await prisma.server.update({ where: { id: target.id }, data: { deploymentId: deployment.id } })
+  await appendLog(deployment.id, target ? "BYOK n8n deployment approved" : "n8n deployment approved", "SUCCESS")
   await appendLog(deployment.id, "Deployment record created", "INFO")
 
   // The config stays in Postgres. Redis receives the job id and nothing else,
@@ -99,7 +108,7 @@ export async function createManagedN8nDeployment(input: {
   const queued = await createAndQueueJob({
     deploymentId: deployment.id,
     type: "N8N_MANAGED_SERVER_DEPLOYMENT",
-    payload: { ...config },
+    payload: { ...config, targetServerId: target?.id },
   })
 
   await appendLog(

@@ -3,6 +3,7 @@ import assert from "node:assert/strict"
 import {
   agentNameForIntent,
   classifyIntent,
+  greetingReply,
   isAccountMemoryQuestion,
   isServerMonitoringIntent,
   MISSING_REPAIR_TARGET_MESSAGE,
@@ -25,6 +26,8 @@ assert.equal(classifyIntent("show my deployments"), "LIST_DEPLOYMENTS")
 
 assert.equal(classifyIntent("CHECK MONITORING OF MY SERVER"), "CHECK_MONITORING_STATUS")
 assert.equal(isServerMonitoringIntent(classifyIntent("CHECK MONITORING OF MY SERVER")), true)
+assert.equal(classifyIntent("can you check the live servers"), "LIST_SERVERS")
+assert.equal(classifyIntent("what are the online servers"), "LIST_SERVERS")
 assert.equal(classifyIntent("WHAT IS CPU LOAD"), "CHECK_CPU_USAGE")
 assert.equal(isServerMonitoringIntent(classifyIntent("WHAT IS CPU LOAD")), true)
 assert.equal(classifyIntent("what about cpu?"), "CHECK_CPU_USAGE")
@@ -32,6 +35,8 @@ assert.equal(isServerMonitoringIntent(classifyIntent("what about cpu?")), true)
 
 assert.equal(classifyIntent("what is my name"), "GENERAL_TISIOPS_HELP")
 assert.equal(isAccountMemoryQuestion("what is my name"), true)
+assert.equal(greetingReply("hi"), "Hi! How can I help with your deployment, servers, monitoring, or infrastructure today?")
+assert.equal(greetingReply("what is the capital of France"), null)
 
 assert.equal(classifyIntent("what is the last server i deployed"), "GET_LAST_SERVER")
 assert.equal(classifyIntent("what was the last tisiops server i deployed"), "GET_LAST_SERVER")

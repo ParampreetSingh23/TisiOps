@@ -121,8 +121,9 @@ export async function getUserServerById(userId: string, serverId: string) {
 export async function createBYOSServer(userId: string, input: CreateBYOSServerInput) {
   const host = input.host.trim()
   const port = input.sshPort ?? 22
-  const username = input.sshUsername?.trim() || "ubuntu"
-  const defaultName = `ubuntu-server-${Math.random().toString(36).substring(2, 7)}`
+  const username = input.sshUsername?.trim()
+  if (!username) throw new Error("SSH username is required")
+  const defaultName = `server-${Math.random().toString(36).substring(2, 7)}`
   const serverName = input.name?.trim() || defaultName
 
   let credentialsStored = false

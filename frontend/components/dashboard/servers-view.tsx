@@ -39,17 +39,17 @@ export type ServerRecord = {
   memoryMb?: number
   diskGb?: number
   status:
-    | "CONNECTED"
-    | "VERIFYING"
-    | "NEEDS_ATTENTION"
-    | "UNREACHABLE"
-    | "DISCONNECTED"
-    | "READY"
-    | "PROVISIONING"
-    | "STARTING"
-    | "STOPPED"
-    | "STOPPING"
-    | "TERMINATED"
+  | "CONNECTED"
+  | "VERIFYING"
+  | "NEEDS_ATTENTION"
+  | "UNREACHABLE"
+  | "DISCONNECTED"
+  | "READY"
+  | "PROVISIONING"
+  | "STARTING"
+  | "STOPPED"
+  | "STOPPING"
+  | "TERMINATED"
   credentialsStored: boolean
   canPause?: boolean
   canRestart?: boolean
@@ -73,6 +73,10 @@ const PROVIDERS: Record<string, { icon: string; label: string }> = {
   TISIOPS_MANAGED_AWS: { icon: "aws", label: "AWS · managed by TisiOps" },
   TISIOPS_MANAGED_VERCEL: { icon: "vercel", label: "Vercel · managed" },
   CUSTOM_VPS: { icon: "custom-vps", label: "Your own server" },
+  AWS: { icon: "aws", label: "AWS EC2" },
+  AZURE: { icon: "azure", label: "Azure VM" },
+  GCP: { icon: "gcp", label: "Google Cloud VM" },
+  EXCLOUD: { icon: "excloud", label: "Excloud" },
 }
 
 export function providerLabel(provider: string | null | undefined): string {
@@ -97,12 +101,12 @@ export function StatusDot({ status }: { status: string }) {
   const dotColor = isOk
     ? "bg-emerald-500"
     : isTransitioning
-    ? "bg-brand animate-pulse"
-    : isWarning
-    ? "bg-amber-500 animate-pulse"
-    : isErr
-    ? "bg-red-500"
-    : "bg-ink-muted/50"
+      ? "bg-brand animate-pulse"
+      : isWarning
+        ? "bg-amber-500 animate-pulse"
+        : isErr
+          ? "bg-red-500"
+          : "bg-ink-muted/50"
 
   const textColor = isTransitioning ? "text-brand font-semibold" : "text-ink-muted"
 
@@ -338,10 +342,10 @@ export function ServersView() {
                           {server.status === "STARTING"
                             ? "Starting server..."
                             : server.status === "STOPPING"
-                            ? "Stopping server..."
-                            : server.status === "PROVISIONING"
-                            ? "Provisioning..."
-                            : "Verifying..."}
+                              ? "Stopping server..."
+                              : server.status === "PROVISIONING"
+                                ? "Provisioning..."
+                                : "Verifying..."}
                         </span>
                         <span className="font-mono text-[10px] text-brand">In progress</span>
                       </div>

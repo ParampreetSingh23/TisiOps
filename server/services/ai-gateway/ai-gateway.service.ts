@@ -60,6 +60,17 @@ export const modelSchema = z.object({
   tags: z.array(z.string().trim().min(1).max(40)).max(12).optional(),
 })
 
+export const DEFAULT_CONSOLE_MODEL = "mistral-default"
+export const CONSOLE_MODEL_IDS = [DEFAULT_CONSOLE_MODEL, "gemini-3.8-flash"] as const
+export const consoleModelSchema = z.enum(CONSOLE_MODEL_IDS)
+
+export function resolveConsoleModel(modelCode: string | null | undefined) {
+  if (!modelCode) return DEFAULT_CONSOLE_MODEL
+  const parsed = consoleModelSchema.safeParse(modelCode)
+  if (!parsed.success) throw new AiGatewayError("INVALID_MODEL", "Invalid model", 400)
+  return parsed.data
+}
+
 const providers = [
   { providerId: "google-gemini", name: "Gemini", type: "gemini", baseUrl: null, apiKeyEnvName: "GEMINI_API_KEY" },
   { providerId: "xai-grok", name: "Grok", type: "openai-compatible", baseUrl: "https://api.x.ai/v1", apiKeyEnvName: "GROK_API_KEY" },
@@ -68,6 +79,8 @@ const providers = [
 ]
 
 const models = [
+  { modelCode: "mistral-default", displayName: "Mistral", providerId: "mistral", providerModel: process.env.MISTRAL_MODEL ?? "mistral-medium-latest", description: "Existing TisiOps model.", tags: ["console"] },
+  { modelCode: "gemini-3.8-flash", displayName: "Gemini 3.8 Flash", providerId: "google-gemini", providerModel: "gemini-3.8-flash", description: "Google model for TisiOps AI Console.", contextWindow: 1_000_000, tags: ["console", "recommended"] },
   { modelCode: "gemini-flash", displayName: "Gemini Flash", providerId: "google-gemini", providerModel: "gemini-2.5-flash", description: "Fast model for general DevOps assistance.", contextWindow: 1_000_000, tags: ["fast", "devops"] },
   { modelCode: "gemini-pro", displayName: "Gemini Pro", providerId: "google-gemini", providerModel: "gemini-2.5-pro", description: "Deeper reasoning for repair planning.", contextWindow: 1_000_000, tags: ["reasoning"] },
   { modelCode: "grok", displayName: "Grok", providerId: "xai-grok", providerModel: "grok-4", description: "Conversational reasoning model.", tags: ["reasoning"] },
@@ -208,7 +221,7 @@ async function checkLimits(userId: string, isAdmin: boolean) {
 }
 
 async function routeChat(input: {
-  userId: string
+  userId?: string
   apiKeyId?: string | null
   isAdmin: boolean
   source: string
@@ -228,10 +241,12 @@ async function routeChat(input: {
   const started = performance.now()
 
   return tracer.startActiveSpan("ai_gateway.request.received", async (span) => {
-    span.setAttributes({ requestId, userId: input.userId, source: input.source, modelCode: input.modelCode })
+    span.setAttributes({ requestId, userId: input.userId ?? "anonymous", source: input.source, modelCode: input.modelCode })
     try {
-      await checkLimits(input.userId, input.isAdmin)
-      await recordMinuteHit(input.userId)
+      if (input.userId) {
+        await checkLimits(input.userId, input.isAdmin)
+        await recordMinuteHit(input.userId)
+      }
 
       const model = await prisma.aiModel.findUnique({ where: { modelCode: input.modelCode }, include: { provider: true } })
       if (!model) throw new AiGatewayError("MODEL_NOT_FOUND", "Model not found", 404)
@@ -239,7 +254,10 @@ async function routeChat(input: {
       if (!model.provider?.isEnabled) throw new AiGatewayError("PROVIDER_DISABLED", "Provider is disabled", 403)
 
       const apiKey = model.provider.apiKeyEnvName ? process.env[model.provider.apiKeyEnvName] : null
-      if (!apiKey) throw new AiGatewayError("PROVIDER_KEY_MISSING", "Provider key missing", 503)
+      if (!apiKey) {
+        const code = model.providerId === "mistral" ? "MISTRAL_NOT_CONFIGURED" : model.providerId === "google-gemini" ? "GEMINI_NOT_CONFIGURED" : "PROVIDER_KEY_MISSING"
+        throw new AiGatewayError(code, "Provider is not configured", 503)
+      }
 
       const output = await adapterFor(model.provider).chat({
         providerModel: model.providerModel,
@@ -351,9 +369,9 @@ export async function chatWithUserKey(raw: string, body: unknown) {
 }
 
 export async function aiGatewayChat(input: {
-  userId: string
+  userId?: string
   isAdmin: boolean
-  source: "AI_CONSOLE" | "AGENT" | "ADMIN_TEST"
+  source: "AI_CONSOLE" | "AGENT" | "ADMIN_TEST" | "DEMO"
   agentName?: string
   modelCode?: string
   messages: AiMessage[]
@@ -364,7 +382,9 @@ export async function aiGatewayChat(input: {
 }) {
   return routeChat({
     ...input,
-    modelCode: input.modelCode ?? process.env.AI_GATEWAY_DEFAULT_MODEL ?? "gemini-flash",
+    modelCode: input.source === "AI_CONSOLE"
+      ? resolveConsoleModel(input.modelCode)
+      : input.modelCode ?? process.env.AI_GATEWAY_DEFAULT_MODEL ?? "gemini-flash",
   })
 }
 

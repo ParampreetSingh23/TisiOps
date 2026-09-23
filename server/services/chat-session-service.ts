@@ -17,6 +17,7 @@ export type SessionSummary = {
   id: string
   title: string
   updatedAt: string
+  selectedModelId: string | null
 }
 
 export type StoredMessage = {
@@ -24,6 +25,8 @@ export type StoredMessage = {
   role: "user" | "assistant"
   content: string
   createdAt: string
+  provider: string | null
+  modelId: string | null
 }
 
 function toClientRole(role: "USER" | "ASSISTANT"): "user" | "assistant" {
@@ -35,7 +38,7 @@ export async function listSessions(userId: string): Promise<SessionSummary[]> {
   const sessions = await prisma.aiChatSession.findMany({
     where: { userId },
     orderBy: { updatedAt: "desc" },
-    select: { id: true, title: true, updatedAt: true },
+    select: { id: true, title: true, updatedAt: true, selectedModelId: true },
     take: 100,
   })
 
@@ -43,6 +46,7 @@ export async function listSessions(userId: string): Promise<SessionSummary[]> {
     id: session.id,
     title: session.title,
     updatedAt: session.updatedAt.toISOString(),
+    selectedModelId: session.selectedModelId,
   }))
 }
 
@@ -104,17 +108,65 @@ export async function setSessionContext(
 
 export async function createSession(
   userId: string,
-  title: string
+  title: string,
+  selectedModelId: string,
+  activeServerId?: string
 ): Promise<SessionSummary> {
   const session = await prisma.aiChatSession.create({
-    data: { userId, title },
-    select: { id: true, title: true, updatedAt: true },
+    data: { userId, title, selectedModelId, activeServerId },
+    select: { id: true, title: true, updatedAt: true, selectedModelId: true },
   })
 
   return {
     id: session.id,
     title: session.title,
     updatedAt: session.updatedAt.toISOString(),
+    selectedModelId: session.selectedModelId,
+  }
+}
+
+/** Server Copilot chats are ordinary private chats with an enforced server scope. */
+export async function listServerSessions(userId: string, serverId: string): Promise<SessionSummary[]> {
+  const sessions = await prisma.aiChatSession.findMany({
+    where: { userId, activeServerId: serverId },
+    orderBy: { updatedAt: "desc" },
+    take: 100,
+    select: { id: true, title: true, updatedAt: true, selectedModelId: true },
+  })
+
+  return sessions.map((session) => ({
+    id: session.id,
+    title: session.title,
+    updatedAt: session.updatedAt.toISOString(),
+    selectedModelId: session.selectedModelId,
+  }))
+}
+
+export async function createServerSession(userId: string, serverId: string, title: string): Promise<SessionSummary> {
+  return createSession(userId, title, "mistral-default", serverId)
+}
+
+/** The activeServerId check prevents a user from attaching another server's chat to this page. */
+export async function getServerSession(userId: string, serverId: string, sessionId: string) {
+  const session = await prisma.aiChatSession.findFirst({
+    where: { id: sessionId, userId, activeServerId: serverId },
+    include: { messages: { orderBy: { createdAt: "asc" } } },
+  })
+  if (!session) return null
+
+  return {
+    id: session.id,
+    title: session.title,
+    updatedAt: session.updatedAt.toISOString(),
+    selectedModelId: session.selectedModelId,
+    messages: session.messages.map((message): StoredMessage => ({
+      id: message.id,
+      role: toClientRole(message.role),
+      content: message.content,
+      createdAt: message.createdAt.toISOString(),
+      provider: message.provider,
+      modelId: message.modelId,
+    })),
   }
 }
 
@@ -132,13 +184,37 @@ export async function getSession(userId: string, sessionId: string) {
     id: session.id,
     title: session.title,
     updatedAt: session.updatedAt.toISOString(),
+    selectedModelId: session.selectedModelId,
     messages: session.messages.map((message): StoredMessage => ({
       id: message.id,
       role: toClientRole(message.role),
       content: message.content,
       createdAt: message.createdAt.toISOString(),
+      provider: message.provider,
+      modelId: message.modelId,
     })),
   }
+}
+
+/** Changes only this user's active model; old turns retain their own metadata. */
+export async function setSessionModel(
+  userId: string,
+  sessionId: string,
+  selectedModelId: string
+): Promise<boolean> {
+  const { count } = await prisma.aiChatSession.updateMany({
+    where: { id: sessionId, userId },
+    data: { selectedModelId },
+  })
+  return count > 0
+}
+
+export async function sessionModelId(userId: string, sessionId: string): Promise<string | null> {
+  const session = await prisma.aiChatSession.findFirst({
+    where: { id: sessionId, userId },
+    select: { selectedModelId: true },
+  })
+  return session?.selectedModelId ?? null
 }
 
 /** True when the session exists and belongs to this user. */
@@ -184,6 +260,8 @@ export async function appendTurn(input: {
   sessionId: string
   userContent: string
   assistantContent: string
+  assistantProvider?: string
+  assistantModelId?: string
 }): Promise<StoredMessage[] | null> {
   return prisma.$transaction(async (tx) => {
     const session = await tx.aiChatSession.findFirst({
@@ -206,6 +284,8 @@ export async function appendTurn(input: {
         sessionId: session.id,
         role: "ASSISTANT",
         content: input.assistantContent,
+        provider: input.assistantProvider,
+        modelId: input.assistantModelId,
       },
     })
 
@@ -219,6 +299,8 @@ export async function appendTurn(input: {
       role: toClientRole(message.role),
       content: message.content,
       createdAt: message.createdAt.toISOString(),
+      provider: message.provider,
+      modelId: message.modelId,
     }))
   })
 }

@@ -125,7 +125,7 @@ export async function testSshConnection(
       if (errLower.includes("permission denied") || errLower.includes("authentication failed")) {
         return {
           ok: false,
-          error: "Authentication failed. Check your SSH username (e.g. 'ec2-user' for Amazon Linux or 'ubuntu' for Ubuntu) and verify the key matches your EC2 instance.",
+          error: "Authentication failed. Check SSH username and verify the key or password matches this server.",
         }
       }
       if (errLower.includes("sshpass: command not found") || errLower.includes("command not found")) {

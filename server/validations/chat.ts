@@ -10,6 +10,11 @@ import { z } from "zod"
 
 export const chatSessionCreateSchema = z.object({
   title: z.string().trim().min(1).max(80),
+  selectedModelId: z.enum(["mistral-default", "gemini-3.8-flash"]).optional(),
+})
+
+export const chatSessionModelSchema = z.object({
+  selectedModelId: z.enum(["mistral-default", "gemini-3.8-flash"]),
 })
 
 export const chatMessageSchema = z.object({

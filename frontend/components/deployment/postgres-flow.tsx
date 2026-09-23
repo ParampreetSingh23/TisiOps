@@ -3,6 +3,7 @@
 import { AlertTriangle, Loader2 } from "lucide-react"
 import Link from "next/link"
 import { useEffect, useState } from "react"
+import { useSearchParams } from "next/navigation"
 
 import { apiFetch } from "@/lib/api"
 import { card, inputClass, labelClass, primaryButton, secondaryButton } from "@/lib/ui"
@@ -24,6 +25,8 @@ type QuickStart = {
 }
 
 export function PostgresFlow() {
+  const targetServerId = useSearchParams().get("targetServerId")
+  const byok = Boolean(targetServerId)
   const [start, setStart] = useState<QuickStart | null>(null)
   const [workspaceName, setWorkspaceName] = useState("")
   const [deploymentId, setDeploymentId] = useState<string | null>(null)
@@ -57,7 +60,7 @@ export function PostgresFlow() {
         "/api/deployments/postgres/deploy",
         {
           method: "POST",
-          body: JSON.stringify({ ...start.config, workspaceName }),
+          body: JSON.stringify({ ...start.config, workspaceName, targetServerId }),
         }
       )
       setDeploymentId(created.id)
@@ -71,7 +74,7 @@ export function PostgresFlow() {
     return (
       <div className={`${card} mt-3`}>
         <p className="text-sm text-ink-strong">
-          PostgreSQL deployment queued.
+          PostgreSQL deployment queued{byok ? " for your connected server" : ""}.
         </p>
         <p className="mt-1.5 text-sm text-ink-muted">
           TisiOps will show the masked DATABASE_URL on the deployment details
@@ -111,7 +114,7 @@ export function PostgresFlow() {
       </p>
 
       <p className="mt-2 text-sm text-ink-default">
-        {start.template.description}
+        {byok ? "TisiOps will preflight Docker and port 5432, then install PostgreSQL on the selected server after approval." : start.template.description}
       </p>
 
       <dl className="mt-3 flex flex-col gap-1.5">

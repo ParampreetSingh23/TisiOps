@@ -47,6 +47,11 @@ export function serverMetricsJobId(serverId: string): string {
   return `server-metrics-${serverId}`
 }
 
+/** BullMQ reserves `:` for its own Redis key namespace. */
+export function monitoringJobId(kind: string, id: string): string {
+  return `${kind}-${id}`
+}
+
 function monitoringQueue(): Queue<MonitoringJobPayload> {
   if (!queue) {
     queue = new Queue<MonitoringJobPayload>(MONITORING_QUEUE, {
@@ -88,7 +93,7 @@ export async function enqueueMonitoringInstall(
     const job = await (await readyQueue()).add(
       "ENABLE_SERVER_MONITORING",
       { serverId, monitoringId, jobType: "ENABLE_SERVER_MONITORING" },
-      { jobId: `monitoring-install:${serverId}` }
+      { jobId: monitoringJobId("monitoring-install", serverId) }
     )
     return { ok: true, queueJobId: String(job.id) }
   } catch (error) {
@@ -157,7 +162,7 @@ export async function enqueueServerRepair(
     const job = await (await readyQueue()).add(
       "REPAIR_SERVER",
       { serverId, repairPlanId, repairActionId, jobType: "REPAIR_SERVER" },
-      { jobId: `server-repair:${repairPlanId}` }
+      { jobId: monitoringJobId("server-repair", repairPlanId) }
     )
     return { ok: true, queueJobId: String(job.id) }
   } catch (error) {
@@ -182,7 +187,7 @@ export async function enqueueProductionDiscovery(
     const job = await (await readyQueue()).add(
       "DISCOVER_PRODUCTION",
       { userId, serverId, stagingSessionId, jobType: "DISCOVER_PRODUCTION" },
-      { jobId: `production-discovery:${stagingSessionId}` }
+      { jobId: monitoringJobId("production-discovery", stagingSessionId) }
     )
     return { ok: true, queueJobId: String(job.id) }
   } catch (error) {
@@ -207,7 +212,7 @@ export async function enqueueStagingProvision(
     const job = await (await readyQueue()).add(
       "PROVISION_STAGING",
       { userId, serverId, stagingSessionId, jobType: "PROVISION_STAGING" },
-      { jobId: `staging-provision:${stagingSessionId}` }
+      { jobId: monitoringJobId("staging-provision", stagingSessionId) }
     )
     return { ok: true, queueJobId: String(job.id) }
   } catch (error) {

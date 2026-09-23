@@ -91,6 +91,14 @@ export function isAccountMemoryQuestion(text: string): boolean {
   return /\bwhat(?:'s| is)\s+my\s+name\b|\bwho\s+am\s+i\b/i.test(text)
 }
 
+/** Small talk is acknowledged without widening the DevOps-only scope. */
+export function greetingReply(text: string): string | null {
+  if (/^\s*(hi|hello|hey|good morning|good afternoon|good evening)[!.\s]*$/i.test(text)) {
+    return "Hi! How can I help with your deployment, servers, monitoring, or infrastructure today?"
+  }
+  return null
+}
+
 export function isRepairApprovalText(text: string): boolean {
   return /\b(fix it|do the repair|retry that|repair it|retry it|start it|resume it|redeploy it)\b/i.test(text)
 }
@@ -117,6 +125,9 @@ export function classifyIntent(text: string): AgentIntent {
   if (isRepairApprovalText(text)) return "REPAIR_DEPLOYMENT"
   const stagingIntent = stagingIntentFromText(text)
   if (stagingIntent) return stagingIntent
+  if (/\bservers\b/i.test(text) && /\b(live|online|available|reachable)\b/i.test(text)) {
+    return "LIST_SERVERS"
+  }
   const monitoringIntent = monitoringIntentFromText(text)
   if (monitoringIntent) return monitoringIntent
   if (!hasDevopsIntent(text)) return "OUT_OF_SCOPE"

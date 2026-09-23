@@ -15,15 +15,20 @@ import { verifyAwsCredentials } from "./services/aws/sts"
 import {
   appendTurn,
   createSession,
+  createServerSession,
   getSessionContext,
+  getServerSession,
   setSessionContext,
   deleteSession,
   getSession,
   listSessions,
+  listServerSessions,
   ownsSession,
   recentHistory,
+  sessionModelId,
+  setSessionModel,
 } from "./services/chat-session-service"
-import { AiLimitError, askMistral } from "./services/chat-service"
+import { askTisiOps } from "./services/chat-service"
 import { getGithubStatus } from "./services/github/status"
 import {
   getAwsConnectionStatus,
@@ -54,6 +59,8 @@ import {
 import { attachTerminalGateway } from "./services/servers/terminal-gateway"
 import { createTerminalSession } from "./services/servers/terminal.service"
 import { testSshConnection } from "./services/servers/ssh-diagnostic"
+import { inspectServerCapability, planServerCopilotExecution } from "./services/servers/copilot.service"
+import { capabilityForCopilotMessage, containerNameForCopilotMessage, isServerCapability, SERVER_CAPABILITIES } from "./services/servers/copilot-capabilities"
 import {
   getAttempts,
   getDeployment,
@@ -83,7 +90,8 @@ import { enqueueMonitoringInstall, removeServerMetricsSchedule } from "./queues/
 import { platformUsageToday, usageSummary } from "./services/ai/usage.service"
 import { demoUsageToday, runDemoPrompt } from "./services/ai/demo.service"
 import { attachAiGatewayRoutes } from "./services/ai-gateway/ai-gateway.router"
-import { seedAiGatewayDefaults } from "./services/ai-gateway/ai-gateway.service"
+import { resolveConsoleModel, seedAiGatewayDefaults } from "./services/ai-gateway/ai-gateway.service"
+import { AiGatewayError } from "./services/ai-gateway/provider.types"
 import { startDeploymentWorker } from "./workers/deployment.worker"
 import { startMonitoringWorker } from "./workers/monitoring.worker"
 import {
@@ -103,6 +111,7 @@ import {
   approveRepair,
   classifyIntent,
   diagnoseRepair,
+  greetingReply,
   handlePendingStagingSource,
   handleStagingIntent,
   isAccountMemoryQuestion,
@@ -115,12 +124,13 @@ import type { AgentIntent } from "./services/agents/agent.types"
 import { pendingRepairForSession } from "./services/agents/agent-memory"
 import { getDeploymentTelemetrySummary } from "./services/observability/deployment-spans"
 import { signozStatus } from "./services/observability/signoz"
-import { chatMessageSchema, chatSessionCreateSchema } from "./validations/chat"
+import { chatMessageSchema, chatSessionCreateSchema, chatSessionModelSchema } from "./validations/chat"
 import {
   awsConnectionSchema,
   awsTestSchema,
   firstIssue,
 } from "./validations/provider-connection"
+import { createBYOSServerSchema, serverConnectionTestSchema } from "./validations/server"
 import {
   analyzeRepositorySchema,
   approveDeploymentSchema,
@@ -402,7 +412,7 @@ async function answerDeploymentServerLookup(
       type: "answer" as const,
       intent,
       message: servers.length
-        ? ["Your servers:", ...servers.map((server) => `- ${serverLine(server)}`)].join("\n")
+        ? ["Your servers and their current status:", ...servers.map((server) => `- ${serverLine(server)}`)].join("\n")
         : "I do not see any servers in your TisiOps account yet.",
     }
   }
@@ -649,11 +659,130 @@ app.post("/api/servers/:id/monitoring/ask", async (req, res) => {
   res.json({ success: true, data: result.answer })
 })
 
+/** Server Copilot read-only path. Capability id selects fixed SSH only. */
+app.get("/api/servers/:id/copilot/sessions", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const server = await getUserServerById(user.id, String(req.params.id))
+  if (!server) { res.status(404).json({ success: false, error: "Server not found" }); return }
+  res.json({ success: true, data: await listServerSessions(user.id, server.id) })
+})
+
+app.post("/api/servers/:id/copilot/sessions", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const server = await getUserServerById(user.id, String(req.params.id))
+  if (!server) { res.status(404).json({ success: false, error: "Server not found" }); return }
+  const title = typeof req.body?.title === "string" ? req.body.title.trim().slice(0, 80) : "Server chat"
+  res.status(201).json({ success: true, data: await createServerSession(user.id, server.id, title || "Server chat") })
+})
+
+app.get("/api/servers/:id/copilot/sessions/:sessionId", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const session = await getServerSession(user.id, String(req.params.id), String(req.params.sessionId))
+  if (!session) { res.status(404).json({ success: false, error: "Server chat not found" }); return }
+  res.json({ success: true, data: session })
+})
+
+app.post("/api/servers/:id/copilot/inspect", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const capability = typeof req.body?.capability === "string" ? req.body.capability : ""
+  if (!isServerCapability(capability)) {
+    res.status(400).json({ success: false, error: "Unsupported server capability." })
+    return
+  }
+  if (SERVER_CAPABILITIES[capability].risk !== "READ_ONLY") {
+    res.status(422).json({ success: false, error: "This operation requires an approved execution plan." })
+    return
+  }
+
+  const result = await inspectServerCapability({
+    userId: user.id,
+    serverId: String(req.params.id),
+    capability,
+  })
+  if (!result.ok) {
+    res.status(result.status).json({ success: false, error: result.error })
+    return
+  }
+  res.json({ success: true, data: result.result })
+})
+
+app.post("/api/servers/:id/copilot/plans", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+  const capability = typeof req.body?.capability === "string" ? req.body.capability : ""
+  if (!isServerCapability(capability) || SERVER_CAPABILITIES[capability].risk !== "EXECUTION") {
+    res.status(400).json({ success: false, error: "Unsupported execution capability." })
+    return
+  }
+  const result = await planServerCopilotExecution({ userId: user.id, serverId: String(req.params.id), capability })
+  if (!result.ok) {
+    res.status(result.status).json({ success: false, error: result.error })
+    return
+  }
+  res.status(201).json({ success: true, data: result.plan })
+})
+
+app.post("/api/servers/:id/copilot/ask", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+  const message = typeof req.body?.message === "string" ? req.body.message.trim() : ""
+  if (!message || message.length > 500) {
+    res.status(400).json({ success: false, error: "Enter a server request up to 500 characters." })
+    return
+  }
+  const sessionId = typeof req.body?.sessionId === "string" ? req.body.sessionId : ""
+  if (!sessionId || !(await getServerSession(user.id, String(req.params.id), sessionId))) {
+    res.status(404).json({ success: false, error: "Server chat not found" })
+    return
+  }
+  const capability = capabilityForCopilotMessage(message)
+  let reply: { type: "inspection" | "plan" | "unsupported"; output?: string; message?: string; id?: string; diagnosis?: string; actions?: { label: string }[] }
+  if (!capability) {
+    const server = await getUserServerById(user.id, String(req.params.id))
+    if (!server) { res.status(404).json({ success: false, error: "Server not found" }); return }
+    const answer = await askTisiOps(
+      [
+        ...(await recentHistory(user.id, sessionId)),
+        {
+          role: "user",
+          content: `You are advising about this server only: ${JSON.stringify({ name: server.name, provider: server.provider, region: server.region, status: server.status, dockerStatus: server.dockerStatus })}. Do not claim that you ran a command or changed infrastructure. Explain the user's request and state when an approved TisiOps operation is required.\n\nUser request: ${message}`,
+        },
+      ],
+      { userId: user.id, isAdmin: callerIsAdmin(user) },
+      (await sessionModelId(user.id, sessionId)) ?? undefined,
+      "AGENT"
+    )
+    reply = { type: "unsupported", message: answer.content }
+  } else if (SERVER_CAPABILITIES[capability].risk === "READ_ONLY") {
+    const result = await inspectServerCapability({ userId: user.id, serverId: String(req.params.id), capability, containerName: containerNameForCopilotMessage(message) })
+    if (!result.ok) { res.status(result.status).json({ success: false, error: result.error }); return }
+    reply = { type: "inspection", ...result.result }
+  } else {
+    const result = await planServerCopilotExecution({ userId: user.id, serverId: String(req.params.id), capability })
+    if (!result.ok) { res.status(result.status).json({ success: false, error: result.error }); return }
+    reply = { type: "plan", ...result.plan }
+  }
+  const transcript = reply.type === "plan"
+    ? `${reply.diagnosis}\n\n${reply.actions?.map((action) => `- ${action.label}`).join("\n") ?? ""}`
+    : reply.output || reply.message || "No evidence returned."
+  const messages = await appendTurn({ userId: user.id, sessionId, userContent: message, assistantContent: transcript })
+  if (!messages) { res.status(404).json({ success: false, error: "Server chat not found" }); return }
+  res.json({ success: true, data: { ...reply, messages } })
+})
+
 app.post("/api/servers/:id/repairs/:repairPlanId/approve", async (req, res) => {
   const user = await requireDbUser(req, res)
   if (!user) return
 
-  const result = await approveServerRepair(user.id, String(req.params.repairPlanId))
+  const result = await approveServerRepair(user.id, String(req.params.repairPlanId), String(req.params.id))
   if (!result.ok) {
     res.status(result.status).json({ success: false, error: result.error })
     return
@@ -770,7 +899,13 @@ app.post("/api/servers/test-connection", async (req, res) => {
   const user = await requireDbUser(req, res)
   if (!user) return
 
-  const result = await testSshConnection(req.body)
+  const parsed = serverConnectionTestSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ success: false, error: firstIssue(parsed.error) })
+    return
+  }
+
+  const result = await testSshConnection(parsed.data)
   if (!result.ok) {
     res.status(400).json({ success: false, error: result.error })
     return
@@ -783,8 +918,28 @@ app.post("/api/servers", async (req, res) => {
   const user = await requireDbUser(req, res)
   if (!user) return
 
+  const parsed = createBYOSServerSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ success: false, error: firstIssue(parsed.error) })
+    return
+  }
+
   try {
-    const server = await createBYOSServer(user.id, req.body)
+    const test = await testSshConnection(parsed.data)
+    if (!test.ok) {
+      res.status(400).json({ success: false, error: test.error })
+      return
+    }
+
+    const server = await createBYOSServer(user.id, {
+      ...parsed.data,
+      osVersion: test.details?.os,
+      dockerStatus: test.details?.dockerStatus,
+      sudoStatus: test.details?.sudoStatus,
+      cpuInfo: test.details?.cpuInfo,
+      memoryMb: test.details?.memoryMb,
+      diskGb: test.details?.diskGb,
+    })
     res.json({ success: true, data: server })
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Failed to connect server"
@@ -1017,8 +1172,31 @@ app.post("/api/chat/sessions", async (req, res) => {
     return
   }
 
-  const session = await createSession(user.id, parsed.data.title)
+  const session = await createSession(
+    user.id,
+    parsed.data.title,
+    resolveConsoleModel(parsed.data.selectedModelId)
+  )
   res.status(201).json({ success: true, data: session })
+})
+
+app.patch("/api/chat/sessions/:id/model", async (req, res) => {
+  const user = await requireDbUser(req, res)
+  if (!user) return
+
+  const parsed = chatSessionModelSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ success: false, error: "INVALID_MODEL" })
+    return
+  }
+
+  const updated = await setSessionModel(user.id, req.params.id, parsed.data.selectedModelId)
+  if (!updated) {
+    res.status(404).json({ success: false, error: "Chat not found" })
+    return
+  }
+
+  res.json({ success: true, data: { selectedModelId: parsed.data.selectedModelId } })
 })
 
 app.get("/api/chat/sessions/:id", async (req, res) => {
@@ -1102,6 +1280,18 @@ app.post("/api/chat/sessions/:id/messages", async (req, res) => {
   }
 
   const { content } = parsed.data
+  const greeting = greetingReply(content)
+  if (greeting) {
+    await appendTurn({
+      userId: user.id,
+      sessionId,
+      userContent: content,
+      assistantContent: greeting,
+    })
+    res.json({ success: true, data: { type: "answer", intent: "GENERAL_TISIOPS_HELP", message: greeting } })
+    return
+  }
+
   const intent = detectIntent(content)
   const agentIntent = classifyIntent(content)
 
@@ -1514,17 +1704,17 @@ app.post("/api/chat/sessions/:id/messages", async (req, res) => {
                           // own session, so it can never point at someone else's repo.
                           context: await getSessionContext(user.id, sessionId),
                         })
-                      : {
-                          type: "answer" as const,
-                          intent,
-                          message: await askMistral(
+                      : await (async () => {
+                          const answer = await askTisiOps(
                             [
                               ...(await recentHistory(user.id, sessionId)),
                               { role: "user" as const, content },
                             ],
-                            { userId: user.id, isAdmin: callerIsAdmin(user) }
-                          ),
-                        }
+                            { userId: user.id, isAdmin: callerIsAdmin(user) },
+                            (await sessionModelId(user.id, sessionId)) ?? undefined
+                          )
+                          return { type: "answer" as const, intent, message: answer.content, provider: answer.provider, modelId: answer.modelId }
+                        })()
 
     // Remember which repository the conversation moved to.
     if ("context" in response && response.context) {
@@ -1536,6 +1726,8 @@ app.post("/api/chat/sessions/:id/messages", async (req, res) => {
       sessionId,
       userContent: content,
       assistantContent: response.message,
+      assistantProvider: "provider" in response ? response.provider : undefined,
+      assistantModelId: "modelId" in response ? response.modelId : undefined,
     })
 
     if (!stored) {
@@ -1545,18 +1737,12 @@ app.post("/api/chat/sessions/:id/messages", async (req, res) => {
 
     res.json({ success: true, data: response })
   } catch (error) {
-    // A spent limit is the user's answer, not a server fault: 429 with the
-    // written message, and nothing was sent to the provider.
-    if (error instanceof AiLimitError) {
-      res
-        .status(429)
-        .json({ success: false, error: error.message, reason: error.reason })
-      return
-    }
-
-    const message = error instanceof Error ? error.message : "Unknown error"
-    console.error("chat failed:", message)
-    res.status(502).json({ success: false, error: message })
+    const code = error instanceof AiGatewayError ? error.code : "MODEL_ERROR"
+    const safeCode = code === "MISTRAL_NOT_CONFIGURED" || code === "GEMINI_NOT_CONFIGURED" || code === "PROVIDER_RATE_LIMITED" || code === "INVALID_MODEL"
+      ? code
+      : code.includes("LIMIT") ? "PROVIDER_RATE_LIMITED" : code === "PROVIDER_TIMEOUT" || code === "PROVIDER_DISABLED" || code === "AI_GATEWAY_DISABLED" ? "PROVIDER_UNAVAILABLE" : "MODEL_ERROR"
+    console.error("chat failed:", safeCode)
+    res.status(safeCode === "PROVIDER_RATE_LIMITED" ? 429 : error instanceof AiGatewayError ? error.status : 502).json({ success: false, error: safeCode })
   }
 })
 
@@ -1990,6 +2176,14 @@ app.post("/api/deployments/n8n/plan", async (req, res) => {
     return
   }
 
+  const target = parsed.data.targetServerId
+    ? await getUserServerById(user.id, parsed.data.targetServerId)
+    : null
+  if (parsed.data.targetServerId && (!target || target.status !== "CONNECTED" || !target.credentialsStored)) {
+    res.status(422).json({ success: false, error: "Select a connected server with stored SSH credentials." })
+    return
+  }
+
   // Planning has no side effects: no rows, no AWS calls, nothing to undo.
   res.json({
     success: true,
@@ -1998,7 +2192,7 @@ app.post("/api/deployments/n8n/plan", async (req, res) => {
       plan: await buildDeploymentPlan(validated.config, {
         userId: user.id,
         isAdmin: callerIsAdmin(user),
-      }),
+      }, target ? { name: target.name, address: target.publicIp || target.host || target.elasticIp || target.id } : undefined),
     },
   })
 })
@@ -2017,6 +2211,7 @@ app.post("/api/deployments/n8n/deploy", async (req, res) => {
     userId: user.id,
     isAdmin: user.role === "ADMIN" || isAdminEmail(user.email),
     config: parsed.data,
+    targetServerId: parsed.data.targetServerId,
   })
 
   if (!result.ok) {
@@ -2115,6 +2310,7 @@ app.post("/api/deployments/postgres/deploy", async (req, res) => {
   const result = await createManagedPostgresDeployment({
     userId: user.id,
     config: parsed.data,
+    targetServerId: parsed.data.targetServerId,
   })
 
   if (!result.ok) {

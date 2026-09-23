@@ -35,6 +35,9 @@ export class GeminiProvider implements AiProviderAdapter {
           generationConfig: {
             temperature: input.temperature,
             maxOutputTokens: input.maxTokens,
+            ...(input.providerModel === "gemini-3.8-flash"
+              ? { thinkingConfig: { thinkingLevel: "medium" } }
+              : {}),
           },
         }),
       }

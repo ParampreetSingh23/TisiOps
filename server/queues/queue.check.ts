@@ -3,6 +3,7 @@ import assert from "node:assert/strict"
 import { DEFAULT_JOB_OPTIONS } from "./deployment.queue"
 import { JOB_TYPES, type DeploymentJobPayload } from "./deployment.types"
 import { describeRedisError, redisTarget } from "./redis"
+import { monitoringJobId } from "./monitoring.queue"
 import { redact } from "../services/redaction"
 
 /**
@@ -107,5 +108,12 @@ process.env.REDIS_URL = "rediss://default:hunter2@example.redis.io:10419"
 const target = redisTarget()
 assert.equal(target, "example.redis.io:10419")
 assert.ok(!target.includes("hunter2"), "target must never carry the password")
+
+// BullMQ v6 rejects custom ids containing `:` before it contacts Redis. Every
+// monitoring job must use this helper so approval cannot surface as a fake
+// Redis failure.
+const repairJobId = monitoringJobId("server-repair", "clx0000000000000000000000")
+assert.equal(repairJobId, "server-repair-clx0000000000000000000000")
+assert.ok(!repairJobId.includes(":"))
 
 console.log("queue checks passed")

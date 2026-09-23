@@ -58,6 +58,7 @@ export const N8N_START_STEPS = [
 ]
 
 export type N8nProgress = {
+  provider: Deployment["provider"]
   phase: Phase
   status: DeploymentStatus
   statusDetail: string | null
@@ -125,6 +126,7 @@ export function buildProgress(
     const { steps, percent } = startProgress(serverStatus)
 
     return {
+      provider: deployment.provider,
       phase,
       status: deployment.status,
       statusDetail: deployment.statusDetail,
@@ -177,6 +179,7 @@ export function buildProgress(
         : Math.round((done / countable) * 100)
 
   return {
+    provider: deployment.provider,
     phase,
     status: deployment.status,
     statusDetail: deployment.statusDetail,

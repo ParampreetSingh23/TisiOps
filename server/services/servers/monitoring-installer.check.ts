@@ -43,6 +43,7 @@ assert.match(HEARTBEAT_SCRIPT, /last_heartbeat/)
 assert.match(DOCKER_INSTALL_SCRIPT, /\bdocker-ce\b/)
 assert.match(DOCKER_INSTALL_SCRIPT, /\bdocker-compose-plugin\b/)
 assert.match(DOCKER_INSTALL_SCRIPT, /systemctl enable --now docker/)
+assert.match(DOCKER_INSTALL_SCRIPT, /case "\$ID" in ubuntu\|debian/)
 
 // The full controlled error surface the worker can emit.
 for (const code of [

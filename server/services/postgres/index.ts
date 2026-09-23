@@ -31,17 +31,27 @@ export type CreateResult =
 export async function createManagedPostgresDeployment(input: {
   userId: string
   config: PostgresConfigInput
+  targetServerId?: string | null
 }): Promise<CreateResult> {
   const validated = validatePostgresConfig(input.config)
   if (!validated.ok) return { ok: false, error: validated.error }
 
   const config = validated.config
+  const target = input.targetServerId
+    ? await prisma.server.findFirst({
+        where: { id: input.targetServerId, userId: input.userId },
+        select: { id: true, status: true, credentialsStored: true },
+      })
+    : null
+  if (input.targetServerId && (!target || target.status !== "CONNECTED" || !target.credentialsStored)) {
+    return { ok: false, error: "Select a connected server with stored SSH credentials." }
+  }
 
   const deployment = await prisma.deployment.create({
     data: {
       userId: input.userId,
       type: "POSTGRES",
-      provider: "TISIOPS_MANAGED_AWS",
+      provider: target ? "BYOK_SERVER" : "TISIOPS_MANAGED_AWS",
       appName: config.workspaceName,
       template: "postgres-managed-server",
       status: "PENDING",
@@ -62,13 +72,15 @@ export async function createManagedPostgresDeployment(input: {
     },
   })
 
-  await appendLog(deployment.id, "PostgreSQL deployment approved", "SUCCESS")
+  if (target) await prisma.server.update({ where: { id: target.id }, data: { deploymentId: deployment.id } })
+
+  await appendLog(deployment.id, target ? "BYOK PostgreSQL deployment approved" : "PostgreSQL deployment approved", "SUCCESS")
   await appendLog(deployment.id, PUBLIC_PASSWORD_WARNING, "WARNING")
 
   const queued = await createAndQueueJob({
     deploymentId: deployment.id,
     type: "POSTGRES_MANAGED_SERVER_DEPLOYMENT",
-    payload: { ...config },
+    payload: { ...config, targetServerId: target?.id },
   })
 
   await appendLog(

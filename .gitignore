@@ -16,3 +16,5 @@ server/infra/terraform/deployments/*
 *.tfstate
 *.tfstate.*
 *.tfvars
+
+.next/

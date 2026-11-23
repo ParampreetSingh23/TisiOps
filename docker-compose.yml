@@ -1,0 +1,32 @@
+# Postgres (Neon) and Redis (Redis Cloud) are external; URLs come from the env files.
+services:
+  api:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    env_file: server/.env
+    environment:
+      PORT: 5001
+    ports:
+      - "5001:5001"
+    volumes:
+      - terraform-deployments:/app/server/infra/terraform/deployments
+
+  web:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      secrets:
+        - web_env
+    env_file: frontend/.env.local
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+secrets:
+  web_env:
+    file: frontend/.env.local
+
+volumes:
+  terraform-deployments:

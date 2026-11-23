@@ -15,11 +15,9 @@
   "dependencies": {
     "@clerk/nextjs": "^7.7.0",
     "@icons-pack/react-simple-icons": "^13.13.0",
-    "@radix-ui/themes": "^3.3.0",
     "@tisiops/server": "*",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
-    "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lenis": "^1.3.26",
     "lucide-react": "^1.30.0",
